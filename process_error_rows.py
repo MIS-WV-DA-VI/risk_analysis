@@ -4,7 +4,7 @@ from deltalake.writer import write_deltalake
 import os
 import shutil
 import glob
-import re # Import regular expression module
+import argparse # Added for command-line arguments if needed in future
 
 # --- Configuration ---
 # Use relative paths, assuming script runs from project root
@@ -12,79 +12,28 @@ ERROR_INPUT_DIR = './error_input/'
 PROCESSED_ERROR_DIR = os.path.join(ERROR_INPUT_DIR, 'processed')
 QUARANTINE_LAKEHOUSE_PATH = './lakehouse_data/quarantined_disasters'
 
-# Define the essential raw column names expected in the error CSV
-# Adjust these based on the ACTUAL columns required for mapping/cleaning
-ESSENTIAL_COLUMNS_RAW = [
-    'YEAR (DATE OF OCCURENCE)',
-    'PROVINCE AFFECTED',
-    'MUNICIPALITY AFFECTED',
-    'COMMODITY',
-    'HYDROMETEOROLOGICAL EVENTS / GENERAL DISASTER EVENTS',
-    'NAME OF DISASTER',
-    'Partially Damaged (AREA AFFECTED (HA.) / MORTALITY HEADS / NO. OF UNITS AFFECTED)',
-    'Totally Damaged (AREA AFFECTED (HA.) / MORTALITY HEADS / NO. OF UNITS AFFECTED)',
-    'TOTAL (AREA AFFECTED (HA.) / MORTALITY HEADS / NO. OF UNITS AFFECTED)',
-    'NUMBER OF FARMERS AFFECTED',
-    'Total Value (Based on Cost of Production / Inputs)',
-    'Total Value - Based on Farm Gate Price ', # Note trailing space
-    'GRAND TOTAL',
-    'source_row_number',
-    'error_reason'
+# Define the essential CLEAN column names expected in this version of the error CSV
+# These should match the headers in the new erroneous_rows.csv
+ESSENTIAL_INPUT_COLUMNS = [
+    'year', 'event_date_start', 'event_date_end', 'province', 'municipality',
+    'commodity', 'disaster_category', 'disaster_name',
+    'area_partially_damaged_ha', 'area_totally_damaged_ha', 'area_total_affected_ha',
+    'farmers_affected', 'losses_php_production_cost', 'losses_php_farm_gate',
+    'losses_php_grand_total', 'source_row_number', 'error_reason'
+    # 'disaster_type_raw' and 'sanitation_remarks' are optional but present in the file
 ]
 
+# Define the final set of columns to keep in the Delta table
+# Can be the same as input, or a subset/superset
+FINAL_DELTA_COLUMNS = ESSENTIAL_INPUT_COLUMNS + ['disaster_type_raw', 'sanitation_remarks']
 
-def clean_column_names(df):
-    """Cleans column names by removing special chars, lowercasing, and replacing spaces."""
-    new_columns = {}
-    for col in df.columns:
-        new_col = col.lower()
-        # Remove content within parentheses, including parentheses
-        new_col = re.sub(r'\s*\(.*\)\s*', '', new_col).strip()
-        # Remove special characters like '/' and extra spaces, replace with underscore
-        new_col = re.sub(r'[^a-z0-9\s]+', '', new_col)
-        new_col = re.sub(r'\s+', '_', new_col).strip('_')
-        new_columns[col] = new_col
-    df = df.rename(columns=new_columns)
-    return df
-
-def parse_date_range(date_str):
-    """Attempts to parse various date string formats into start/end dates."""
-    if pd.isna(date_str):
-        return pd.NaT, pd.NaT
-
-    date_str = str(date_str).strip()
-
-    # Simple cases first (e.g., "YYYY-MM-DD" or similar standard formats)
-    try:
-        dt = pd.to_datetime(date_str)
-        return dt, dt # Assume single day if parsable directly
-    except ValueError:
-        pass # Continue to more complex parsing
-
-    # Case: "Month Day-Day, Year" (e.g., "July 16- August 11, 2025") - simplified, needs robust parsing
-    # This is complex due to potential month changes. For simplicity, we might take the start date.
-    # A more robust solution would involve regex and dateutil library.
-    # Placeholder: Extract first recognizable date part
-    match = re.search(r'(\w+\s+\d+)[,-]?.*(\d{4})', date_str)
-    if match:
-        try:
-            start_part = f"{match.group(1)}, {match.group(2)}"
-            dt_start = pd.to_datetime(start_part)
-            # Cannot reliably get end date without complex logic
-            return dt_start, pd.NaT
-        except ValueError:
-            pass
-
-    # Add more specific regex patterns for other observed formats if needed
-
-    # Fallback if no pattern matches
-    return pd.NaT, pd.NaT
 
 def process_error_file(file_path):
-    """Reads, cleans, and processes a single error CSV file."""
-    print(f"Processing error file: {os.path.basename(file_path)}...")
+    """Reads, validates, cleans types, and processes a single error CSV file with the NEW structure."""
+    print(f"\nProcessing error file: {os.path.basename(file_path)}...")
     try:
-        df_error = pd.read_csv(file_path)
+        # Explicitly set low_memory=False to potentially help with mixed types
+        df_error = pd.read_csv(file_path, low_memory=False)
     except FileNotFoundError:
         print(f"ERROR: File not found: {file_path}")
         return False
@@ -96,71 +45,31 @@ def process_error_file(file_path):
         print("Skipping empty file.")
         return True # Treat as success for moving file
 
-    # --- <<< START: COLUMN CHECK >>> ---
+    # --- <<< START: ESSENTIAL COLUMN CHECK >>> ---
     print("Checking for essential columns...")
-    missing_cols = [col for col in ESSENTIAL_COLUMNS_RAW if col not in df_error.columns]
+    current_columns = df_error.columns.tolist()
+    missing_cols = [col for col in ESSENTIAL_INPUT_COLUMNS if col not in current_columns]
     if missing_cols:
         print(f"ERROR: Essential columns missing in {os.path.basename(file_path)}:")
         for col in missing_cols:
             print(f"  - '{col}'")
-        print("Stopping processing for this file.")
+        print("Stopping processing for this file due to missing essential columns.")
         return False # Indicate failure, do not move the file
     print("All essential columns found.")
-    # --- <<< END: COLUMN CHECK >>> ---
+    # --- <<< END: ESSENTIAL COLUMN CHECK >>> ---
 
 
-    # 1. Clean Column Names
-    df_error = clean_column_names(df_error)
-    print("Cleaned column names.")
+    # 1. Clean Data Types
+    print("Cleaning data types...")
+    # Convert date columns (object -> datetime)
+    # Using errors='coerce' handles bad date formats gracefully -> becomes NaT
+    if 'event_date_start' in df_error.columns:
+        df_error['event_date_start'] = pd.to_datetime(df_error['event_date_start'], errors='coerce')
+    if 'event_date_end' in df_error.columns:
+        df_error['event_date_end'] = pd.to_datetime(df_error['event_date_end'], errors='coerce')
+    print("Converted date columns.")
 
-    # 2. Rename columns to match the target 'lakehouse_disasters' schema
-    # Adjust source column names based on `clean_column_names` output
-    rename_map = {
-        'year_date_of_occurence': 'year',
-        'province_affected': 'province',
-        'municipality_affected': 'municipality',
-        'commodity': 'commodity', # Keep as is if name matches after cleaning
-        'hydrometeorological_events_general_disaster_events': 'disaster_category', # Map from the general category
-        'name_of_disaster': 'disaster_name',
-        'partially_damaged_area_affected_ha_mortality_heads_no_of_units_affected': 'area_partially_damaged_ha',
-        'totally_damaged_area_affected_ha_mortality_heads_no_of_units_affected': 'area_totally_damaged_ha',
-        'total_area_affected_ha_mortality_heads_no_of_units_affected': 'area_total_affected_ha',
-        'number_of_farmers_affected': 'farmers_affected',
-        'total_value_based_on_cost_of_production_inputs': 'losses_php_production_cost',
-        'total_value_based_on_farm_gate_price': 'losses_php_farm_gate', # Ensure trailing space handled
-        'grand_total': 'losses_php_grand_total',
-        'source_row_number': 'source_row_number', # Keep original identifiers
-        'error_reason': 'error_reason'          # Keep error information
-        # Add 'event_date_start' and 'event_date_end' later after parsing
-    }
-
-    # Apply renaming, only keep columns that exist in the rename_map's keys or values we want to keep
-    # Make sure keys in rename_map EXACTLY match columns AFTER clean_column_names()
-    df_error = df_error.rename(columns=rename_map)
-
-    # Filter columns: keep only those that are now in the TARGET schema + identifiers/errors
-    target_columns = list(rename_map.values()) + ['event_date_start', 'event_date_end']
-    df_error = df_error[[col for col in target_columns if col in df_error.columns]]
-    print("Renamed columns.")
-
-
-    # 3. Clean/Parse Data
-    print("Cleaning and parsing data types...")
-    # Parse dates (this is complex due to varying formats)
-    # Apply the custom parser to the 'actual_date_of_occurence' column
-    if 'actual_date_of_occurence' in df_error.columns:
-        dates = df_error['actual_date_of_occurence'].apply(parse_date_range)
-        df_error['event_date_start'] = dates.apply(lambda x: x[0])
-        df_error['event_date_end'] = dates.apply(lambda x: x[1])
-        # Drop the original date column if no longer needed
-        # df_error = df_error.drop(columns=['actual_date_of_occurence'])
-    else:
-        print("Warning: 'actual_date_of_occurence' column not found for date parsing.")
-        df_error['event_date_start'] = pd.NaT
-        df_error['event_date_end'] = pd.NaT
-
-
-    # Convert numeric columns, coercing errors to NaN
+    # Convert numeric columns, coercing errors to NaN, then filling NaN with 0
     numeric_cols = [
         'area_partially_damaged_ha', 'area_totally_damaged_ha', 'area_total_affected_ha',
         'farmers_affected', 'losses_php_production_cost', 'losses_php_farm_gate',
@@ -168,42 +77,46 @@ def process_error_file(file_path):
     ]
     for col in numeric_cols:
         if col in df_error.columns:
-            df_error[col] = pd.to_numeric(df_error[col], errors='coerce')
-        else:
-             print(f"Warning: Expected numeric column '{col}' not found after renaming.")
+            df_error[col] = pd.to_numeric(df_error[col], errors='coerce').fillna(0)
+    print("Converted numeric columns.")
 
-
-    # Ensure essential string columns are strings
-    string_cols = ['province', 'municipality', 'commodity', 'disaster_category', 'disaster_name', 'error_reason']
+    # Ensure essential string columns are strings and handle potential NaNs
+    string_cols = ['province', 'municipality', 'commodity', 'disaster_category',
+                   'disaster_name', 'error_reason', 'disaster_type_raw', 'sanitation_remarks']
     for col in string_cols:
          if col in df_error.columns:
             df_error[col] = df_error[col].astype(str).fillna('Unknown')
+    print("Ensured string columns are strings.")
 
-
-    # Ensure year is integer (handle potential NaNs from coercion)
+    # Ensure year and source_row_number are integer types (handle potential NaNs from coercion)
     if 'year' in df_error.columns:
-         df_error['year'] = pd.to_numeric(df_error['year'], errors='coerce').fillna(0).astype(int)
+         df_error['year'] = pd.to_numeric(df_error['year'], errors='coerce').astype('Int64') # Nullable Integer
+    if 'source_row_number' in df_error.columns:
+         df_error['source_row_number'] = pd.to_numeric(df_error['source_row_number'], errors='coerce').astype('Int64') # Nullable Integer
+    print("Converted integer columns.")
+
+    # 2. Select and Order Final Columns
+    # Ensure only columns defined in FINAL_DELTA_COLUMNS that actually exist are kept
+    final_columns_present = [col for col in FINAL_DELTA_COLUMNS if col in df_error.columns]
+    df_final = df_error[final_columns_present].copy()
+    print(f"Selected final columns for Delta table: {df_final.columns.tolist()}")
 
 
-    print(f"Cleaned data types. Final columns: {df_error.columns.tolist()}")
-
-
-    # 4. Write to Quarantine Delta Table (Overwrite each time for simplicity)
-    print(f"Writing cleaned data to quarantine Delta table: {QUARANTINE_LAKEHOUSE_PATH}...")
-    if os.path.exists(QUARANTINE_LAKEHOUSE_PATH):
-        shutil.rmtree(QUARANTINE_LAKEHOUSE_PATH)
+    # 3. Write to Quarantine Delta Table (Overwrite each time for simplicity)
+    print(f"Writing final cleaned data to quarantine Delta table: {QUARANTINE_LAKEHOUSE_PATH}...")
+    # Overwrite mode for quarantine table - processing one error file at a time effectively replaces content
     write_deltalake(
         QUARANTINE_LAKEHOUSE_PATH,
-        df_error,
+        df_final,
         mode='overwrite', # Overwrite the quarantine table each run
-        schema_mode='overwrite' # Ensure schema matches the processed DataFrame
+        schema_mode='overwrite' # Ensure schema matches the final DataFrame
     )
     print("Successfully wrote to quarantine Delta table.")
 
-    # 5. Optional: Analyze errors
-    if 'error_reason' in df_error.columns:
+    # 4. Optional: Analyze errors
+    if 'error_reason' in df_final.columns:
         print("\n--- Error Summary ---")
-        print(df_error['error_reason'].value_counts())
+        print(df_final['error_reason'].value_counts())
 
     return True # Indicate success
 
@@ -214,12 +127,13 @@ if __name__ == "__main__":
     # Ensure the processed directory exists
     os.makedirs(PROCESSED_ERROR_DIR, exist_ok=True)
 
-    # Find error CSV files (adjust pattern if needed)
+    # Find error CSV files
     error_files = glob.glob(os.path.join(ERROR_INPUT_DIR, '*.csv'))
 
     if not error_files:
         print("No error CSV files found in 'error_input/'.")
     else:
+        print(f"Found {len(error_files)} file(s) to process.")
         processed_count = 0
         failed_count = 0
         for file in error_files:
@@ -227,20 +141,23 @@ if __name__ == "__main__":
                 # Move successful file
                 try:
                     processed_file_path = os.path.join(PROCESSED_ERROR_DIR, os.path.basename(file))
+                    # Ensure the destination doesn't exist to avoid errors on retry
+                    if os.path.exists(processed_file_path):
+                         os.remove(processed_file_path)
                     shutil.move(file, processed_file_path)
                     print(f"Moved processed error file to: {processed_file_path}")
                     processed_count += 1
                 except Exception as move_err:
-                     print(f"ERROR moving file {os.path.basename(file)} after processing: {move_err}")
-                     failed_count += 1 # Count as failure if move fails
+                     print(f"ERROR moving file {os.path.basename(file)} after successful processing: {move_err}")
+                     failed_count += 1
             else:
                 # Keep failed file in input directory for review
-                 print(f"File {os.path.basename(file)} failed processing and was NOT moved.")
+                 print(f"File {os.path.basename(file)} failed processing due to errors and was NOT moved.")
                  failed_count += 1
 
-        print(f"\nProcessed {processed_count} error files successfully.")
+        print(f"\nSuccessfully processed and moved {processed_count} error file(s).")
         if failed_count > 0:
-            print(f"Failed to process or move {failed_count} error files. Please check logs and the '{ERROR_INPUT_DIR}' directory.")
+            print(f"Failed to process or move {failed_count} error file(s). Please check logs and the '{ERROR_INPUT_DIR}' directory for files that were not moved.")
 
     print("--- Error Rows Processing Complete ---")
 

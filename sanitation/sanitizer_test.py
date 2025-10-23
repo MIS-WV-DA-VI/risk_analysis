@@ -7,7 +7,7 @@ from calendar import monthrange
 # --- CONFIGURATION ---
 INPUT_FILENAME = 'source_data.xlsx'
 TARGET_SHEET_NAME = 'Consolidated 2010 - Present'
-OUTPUT_DIR = 'exported' # NEW: Define the output directory name
+OUTPUT_DIR = 'exported'
 CLEAN_OUTPUT_FILENAME = 'clean_data.csv'
 ERROR_OUTPUT_FILENAME = 'erroneous_rows.csv'
 
@@ -59,7 +59,7 @@ def parse_date_range_smart(date_str, year):
     try:
         year = int(year)
     except (ValueError, TypeError):
-         return None, None, "Invalid Year column value" # Added remark for invalid year
+         return None, None, "Invalid Year column value"
 
     try:
         # --- NEW LOGIC: Try specific text patterns FIRST ---
@@ -77,7 +77,6 @@ def parse_date_range_smart(date_str, year):
             else: # It's a single day
                 end_date = start_date
                 remark = "Parsed as a single day event."
-            # Validation check: Ensure parsed year matches the expected year column reasonably
             if abs(year_val - year) > 1:
                  return None, None, f"Year in date string ({year_val}) differs significantly from Year column ({year})."
             return start_date, end_date, remark
@@ -87,7 +86,6 @@ def parse_date_range_smart(date_str, year):
         if match:
             start_month_str, end_month_str, year_from_str = match.groups()
             year_val = int(year_from_str)
-            # Validation check
             if abs(year_val - year) > 1:
                  return None, None, f"Year in date string ({year_val}) differs significantly from Year column ({year})."
             start_date = datetime.strptime(f"{start_month_str} 1 {year_val}", "%B %d %Y").date()
@@ -102,7 +100,6 @@ def parse_date_range_smart(date_str, year):
         if match and '-' not in date_str and 'to' not in date_str.lower():
             month_str, year_from_str = match.groups()
             year_val = int(year_from_str)
-             # Validation check
             if abs(year_val - year) > 1:
                  return None, None, f"Year in date string ({year_val}) differs significantly from Year column ({year})."
             start_date = datetime.strptime(f"{month_str} 1 {year_val}", "%B %d %Y").date()
@@ -112,12 +109,10 @@ def parse_date_range_smart(date_str, year):
             return start_date, end_date, remark
 
         # --- Fallback to pd.to_datetime for standard formats like YYYY-MM-DD ---
-        # Check if the string purely matches a standard format first
         if re.match(r'^\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}:\d{2})?$', date_str):
             dt_obj = pd.to_datetime(date_str, errors='coerce')
             if not pd.isna(dt_obj):
                 date = dt_obj.date()
-                # Validation check
                 if abs(date.year - year) > 1:
                      return None, None, f"Year in date string ({date.year}) differs significantly from Year column ({year})."
                 remark = "Parsed from a standard timestamp format."
@@ -127,14 +122,12 @@ def parse_date_range_smart(date_str, year):
         parts = re.split(r'\s*-\s*|\s+to\s+', date_str, flags=re.IGNORECASE)
         start_str = parts[0]
         end_str = parts[-1]
-
         remark_parts = []
 
         # Process Start String
         match_start_year = re.search(r'(\d{4})', start_str)
         start_year = int(match_start_year.group(1)) if match_start_year else year
         start_str_clean = re.sub(r'\s*,?\s*\d{4}', '', start_str).strip()
-
         try:
             start_date = datetime.strptime(start_str_clean, "%B %d").replace(year=start_year).date()
         except ValueError:
@@ -146,24 +139,20 @@ def parse_date_range_smart(date_str, year):
 
         # Process End String
         match_end_year = re.search(r'(\d{4})', end_str)
-        end_year = int(match_end_year.group(1)) if match_end_year else start_year # Default to start_year if no end year
+        end_year = int(match_end_year.group(1)) if match_end_year else start_year
         end_str_clean = re.sub(r'\s*,?\s*\d{4}', '', end_str).strip()
-
-        if len(parts) == 1: # Only one part means it's likely a single date (or failed parse)
+        if len(parts) == 1:
             end_date = start_date
-            # Avoid double remarks if start was already assumed 1st and start/end strings are the same
             if not ("Start date assumed" in " ".join(remark_parts) and start_str_clean == end_str_clean):
                  remark_parts.append("Parsed as a single day event.")
-        # Handle simple day range like "15-17" within the same month/year
         elif len(end_str_clean.split()) == 1 and end_str_clean.isdigit():
-             # Check if start had a day originally to avoid ambiguous Month-Day range
              try:
-                 datetime.strptime(start_str_clean, "%B %d") # Test if start had a day
+                 datetime.strptime(start_str_clean, "%B %d")
                  end_date = start_date.replace(day=int(end_str_clean))
                  remark_parts.append("Parsed as a date range within the same month.")
-             except ValueError: # Start was month only, end is just a day - ambiguous
+             except ValueError:
                   return None, None, "Ambiguous range (Month to Day)"
-        else: # Handle "Month Day" or just "Month" for end date
+        else:
             try:
                 end_date = datetime.strptime(end_str_clean, "%B %d").replace(year=end_year).date()
             except ValueError:
@@ -178,10 +167,8 @@ def parse_date_range_smart(date_str, year):
         # Final validation checks
         if abs(start_date.year - year) > 1 or abs(end_date.year - year) > 1:
              return None, None, f"Year in date string ({start_date.year}-{end_date.year}) differs significantly from Year column ({year})."
-
         if not remark_parts:
              remark_parts.append("Parsed as a standard date range.")
-
         return start_date, end_date, " ".join(remark_parts)
 
     except Exception as e:
@@ -191,14 +178,11 @@ def parse_date_range_smart(date_str, year):
 
 def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_filename):
     """ Main function to orchestrate the data sanitation process. """
-
-    # --- Determine script directory and construct paths ---
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
     except NameError:
         script_dir = os.getcwd()
         print("Warning: Could not determine script directory, using current working directory.")
-
     input_path = os.path.join(script_dir, input_filename)
     output_path = os.path.join(script_dir, output_dir)
     os.makedirs(output_path, exist_ok=True)
@@ -222,20 +206,31 @@ def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_
         print(f"Error reading Excel sheet: {e}. Make sure a sheet named '{sheet_name}' exists.")
         return
 
-    # Keep original structure + add source row number for error reporting context
     df_original_structure = df.copy()
     df_original_structure['source_row_number'] = df.index + 3
 
-    # Process data in a separate DataFrame
     df_processed = df.rename(columns=lambda c: c.strip())
     df_processed = df_processed.rename(columns=COLUMN_MAPPING)
     df_processed['year'] = pd.to_numeric(df_processed.get('year'), errors='coerce')
+
+    # --- Uppercase Conversion ---
+    string_cols_to_upper = [
+        'province', 'municipality', 'commodity',
+        'disaster_type_raw', 'disaster_category', 'disaster_name'
+    ]
+    for col in string_cols_to_upper:
+        if col in df_processed.columns:
+            # Fill NaN with empty string before converting to upper
+            df_processed[col] = df_processed[col].fillna('').astype(str).str.upper()
+    # --- End Uppercase Conversion ---
+
 
     numeric_cols = list(set(COLUMN_MAPPING.values()) - {'year', 'date_range_str', 'province', 'municipality', 'commodity', 'disaster_type_raw', 'disaster_category', 'disaster_name'})
     for col in numeric_cols:
         if col in df_processed.columns:
             df_processed[col] = clean_numeric_column(df_processed[col])
 
+    # Clean commodity codes AFTER converting to upper
     if 'commodity' in df_processed.columns:
         df_processed['commodity'] = df_processed['commodity'].astype(str).str.replace(r'^\d+\s*-\s*', '', regex=True).str.strip()
 
@@ -250,9 +245,7 @@ def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_
     processed_indices = df_processed.index
     for index, row in df_processed.iterrows():
         reasons = []
-        year_val = row.get('year')
-        start_date = row.get('event_date_start')
-        end_date = row.get('event_date_end')
+        year_val, start_date, end_date = row.get('year'), row.get('event_date_start'), row.get('event_date_end')
 
         # Basic Validation
         if pd.isna(row.get('province')) or str(row.get('province')).strip() == '': reasons.append("Missing essential field (province, municipality, or commodity).")
@@ -272,7 +265,6 @@ def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_
         if pd.notna(start_date) and pd.notna(end_date) and pd.notna(year_val):
             year_int = int(year_val)
             if start_date > end_date: reasons.append(f"Date range invalid: Start date ({start_date.date()}) is after end date ({end_date.date()}).")
-            # Year consistency moved to parser
 
         # Area Consistency Validation
         partial, totally, total = row.get('area_partially_damaged_ha', 0), row.get('area_totally_damaged_ha', 0), row.get('area_total_affected_ha', 0)
@@ -281,15 +273,12 @@ def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_
 
         error_reasons.append("; ".join(reasons))
 
-    # Add error reasons to processed df for filtering
     df_processed['error_reason'] = pd.Series(error_reasons, index=processed_indices).reindex(df_processed.index)
 
     # --- Separate Clean and Erroneous Rows ---
     is_erroneous = df_processed['error_reason'].fillna('').astype(str) != ''
     clean_rows = df_processed[~is_erroneous].copy()
-    erroneous_rows = df_processed[is_erroneous].copy() # Start with processed data for structure
-
-    # Add source_row_number to erroneous rows
+    erroneous_rows = df_processed[is_erroneous].copy()
     erroneous_rows = erroneous_rows.merge(
         df_original_structure[['source_row_number']], left_index=True, right_index=True, how='left'
     )
@@ -325,7 +314,6 @@ def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_
     existing_clean_cols = [col for col in clean_final_columns if col in clean_rows.columns]
     clean_rows_final = clean_rows[existing_clean_cols]
 
-    # Error columns = clean columns + helpers
     error_final_columns = existing_clean_cols + ['source_row_number', 'error_reason']
     existing_error_cols = [col for col in error_final_columns if col in erroneous_rows.columns]
     erroneous_rows_final = erroneous_rows[existing_error_cols]

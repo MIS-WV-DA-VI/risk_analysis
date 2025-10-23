@@ -20,8 +20,8 @@ def root():
 @app.get("/api/disaster_summary")
 def get_disaster_summary():
     """
-    Reads the pre-computed analysis results from the
-    JSON file and returns them.
+    Reads the pre-computed analysis results (from the clean data export)
+    from the JSON file and returns them.
     """
     # Ensure the parent directory exists, although handle_export should create it
     os.makedirs(os.path.dirname(API_OUTPUT_FILE), exist_ok=True)
@@ -33,7 +33,7 @@ def get_disaster_summary():
         )
 
     try:
-        # Open the file our transform.py script created
+        # Open the file our data_manager.py export created
         with open(API_OUTPUT_FILE, 'r') as f:
             data = json.load(f)
         return {"status": "success", "data": data}
@@ -50,3 +50,4 @@ if __name__ == "__main__":
     print(f"Attempting to start API server. Access at http://127.0.0.1:8000")
     print(f"Serving data from: {os.path.abspath(API_OUTPUT_FILE)}")
     uvicorn.run(app, host="127.0.0.1", port=8000)
+

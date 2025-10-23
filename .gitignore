@@ -1,0 +1,34 @@
+#Python virtual environment
+
+venv/
+pycache/
+*.pyc
+
+#Generated Data & Output - These folders can get large and shouldn't be in Git
+
+lakehouse_data/
+api_output/
+raw_data/processed/
+error_input/processed/
+
+#Optional: Ignore raw data if you don't want it in Git (uncomment if needed)
+raw_data/*.csv
+error_input/*.csv
+
+#OS-specific files (macOS)
+
+.DS_Store
+
+#Editor-specific files (e.g., VS Code, PyCharm)
+
+.vscode/
+.idea/
+
+#Logs (if you create a logs directory)
+
+logs/
+*.log
+
+#Environment files (e.g., .env for secrets)
+
+.env

@@ -90,7 +90,7 @@ def process_farmer_xlsx_to_delta(input_file_path, write_mode='append'):
         'Total Declared Rice Area': 'total_declared_rice_area_ha'
     })
     municipality_rows['municipality'] = municipality_rows['municipality'].apply(clean_municipality_name_strict)
-    municipality_rows['province'] = 'Aklan' # Assuming Aklan
+    municipality_rows['province'] = 'AKLAN' # Assuming Aklan
     final_df = municipality_rows[['province', 'municipality', 'registered_rice_farmers', 'total_declared_rice_area_ha']].copy()
     numeric_cols = ['registered_rice_farmers', 'total_declared_rice_area_ha']
     for col in numeric_cols:

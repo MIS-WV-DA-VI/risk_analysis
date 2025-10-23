@@ -5,6 +5,7 @@ from deltalake import write_deltalake
 import os
 import glob # Need glob to find files
 import shutil # Need shutil to move files
+import numpy as np # For NaN/Inf replacement
 
 # --- Configuration ---
 # Using relative paths for local execution
@@ -20,6 +21,7 @@ def handle_import(mode_override: str = None):
     """
     Handles importing ALL unprocessed CSV files found in the RAW_DATA_DIR
     into the MAIN Delta Lake table using APPEND mode by default.
+    Cleans data and ensures consistent casing for join keys.
     Moves processed files to the PROCESSED_DATA_DIR.
     An 'overwrite' mode can be forced via command-line for initial setup or resets.
     """
@@ -34,7 +36,11 @@ def handle_import(mode_override: str = None):
 
 
     print(f"Scanning for new CSV files in: {RAW_DATA_DIR}")
-    csv_files = glob.glob(os.path.join(RAW_DATA_DIR, '*.csv'))
+    # Look for files ending in .csv (case-insensitive)
+    csv_files = glob.glob(os.path.join(RAW_DATA_DIR, '*.csv')) + glob.glob(os.path.join(RAW_DATA_DIR, '*.CSV'))
+    # Ensure uniqueness if both patterns match the same file
+    csv_files = list(set(csv_files))
+
 
     if not csv_files:
         print("No new CSV files found in raw_data to import.")
@@ -66,13 +72,29 @@ def handle_import(mode_override: str = None):
             print("Cleaning data...")
             df['event_date_start'] = pd.to_datetime(df['event_date_start'], errors='coerce')
             df['event_date_end'] = pd.to_datetime(df['event_date_end'], errors='coerce')
-            df['municipality'] = df['municipality'].fillna('Unknown').astype(str) # Fill and ensure string
+
+            # --- <<< Ensure consistent UPPERCASE for join keys >>> ---
+            print("Standardizing case for province and municipality...")
+            if 'province' in df.columns:
+                 df['province'] = df['province'].fillna('Unknown').astype(str).str.strip().str.upper()
+            else:
+                 print("Warning: 'province' column not found.")
+                 df['province'] = 'UNKNOWN' # Add if missing, ensure uppercase
+
+            if 'municipality' in df.columns:
+                 df['municipality'] = df['municipality'].fillna('Unknown').astype(str).str.strip().str.upper()
+            else:
+                 print("Warning: 'municipality' column not found.")
+                 df['municipality'] = 'UNKNOWN' # Add if missing, ensure uppercase
+            # --- <<< END >>> ---
+
 
             # Ensure other key string cols are strings
-            str_cols = ['province', 'commodity', 'disaster_category', 'disaster_name', 'disaster_type_raw', 'sanitation_remarks']
+            str_cols = ['commodity', 'disaster_category', 'disaster_name', 'disaster_type_raw', 'sanitation_remarks']
             for col in str_cols:
                 if col in df.columns:
-                    df[col] = df[col].fillna('Unknown').astype(str)
+                    # Also ensure these are uppercase if needed for consistency, or handle case-insensitively in queries
+                    df[col] = df[col].fillna('Unknown').astype(str) # .str.upper() # Optional: Uppercase others too?
 
             # Convert numeric columns safely
             numeric_cols = [
@@ -84,10 +106,30 @@ def handle_import(mode_override: str = None):
             ]
             for col in numeric_cols:
                  if col in df.columns: # Check if column exists before converting
+                    # Convert to numeric, errors become NaN
                     df[col] = pd.to_numeric(df[col], errors='coerce')
+                    # Use pandas nullable Int64 type for integers that might have NaNs
+                    if col in ['year', 'farmers_affected']:
+                         # Attempt conversion to nullable Int64
+                         try:
+                            df[col] = df[col].astype('Int64')
+                         except (ValueError, TypeError):
+                            print(f"Warning: Could not convert column '{col}' to Int64. Check data for non-numeric values.")
+                            pass # Keep original type if conversion fails
 
-            # Fill remaining NaNs after numeric conversion with 0 (use with caution)
-            df.fillna(0, inplace=True)
+            # Fill NaNs in specific numeric columns with 0.0 where appropriate
+            cols_to_fill_zero = [
+                 'area_partially_damaged_ha', 'area_totally_damaged_ha', 'area_total_affected_ha',
+                 'losses_php_production_cost', 'losses_php_farm_gate', 'losses_php_grand_total'
+            ]
+            for col in cols_to_fill_zero:
+                 if col in df.columns:
+                      if pd.api.types.is_numeric_dtype(df[col]):
+                          df[col] = df[col].fillna(0.0)
+                      else:
+                           print(f"Warning: Column '{col}' expected numeric but isn't. Skipping fillna(0.0).")
+
+
             print(f"Read and cleaned {len(df)} rows.")
 
             # Write to MAIN Delta Lake
@@ -97,7 +139,7 @@ def handle_import(mode_override: str = None):
                 safe_lakehouse_path,
                 df,
                 mode=current_write_mode,
-                schema_mode='merge'
+                schema_mode='merge' # Allow schema changes like new columns
             )
             print(f"Successfully wrote data to MAIN Delta table using {current_write_mode.upper()} mode.")
 
@@ -111,6 +153,8 @@ def handle_import(mode_override: str = None):
 
         except Exception as e:
             print(f"ERROR processing file {os.path.basename(file_path)}: {e}")
+            import traceback
+            traceback.print_exc() # Print full traceback for import errors
             print("Skipping this file and continuing...")
 
     print(f"\nProcessed {processed_count} files for main table.")
@@ -122,12 +166,13 @@ def handle_export():
     Runs the analysis query on the MAIN Delta Lake table using DuckDB
     and exports the results to a JSON file for the API. Uses a persistent DB file.
     Tries both read_delta and delta_scan function names.
+    Includes robust integer casting fix.
     """
     print("--- Starting Export from Main Table ---")
     os.makedirs(os.path.dirname(API_OUTPUT_FILE), exist_ok=True)
-    os.makedirs(os.path.dirname(DUCKDB_FILE), exist_ok=True)
+    os.makedirs(os.path.dirname(DUCKDB_FILE), exist_ok=True) # Ensure DB file directory exists
 
-    safe_lakehouse_path = os.path.normpath(LAKEHOUSE_PATH)
+    safe_lakehouse_path = os.path.normpath(LAKEHOUSE_PATH) # Ensure path is OS-correct
 
     if not os.path.exists(safe_lakehouse_path):
         print(f"ERROR: Main Lakehouse table not found at '{safe_lakehouse_path}'.")
@@ -136,10 +181,13 @@ def handle_export():
         return
 
     print(f"Connecting to DuckDB file: {DUCKDB_FILE}...")
-    con = None
+    con = None # Initialize con to None
     try:
+        # Connect to a file instead of in-memory
         con = duckdb.connect(database=DUCKDB_FILE, read_only=False)
-        print(f"DuckDB connection established. DuckDB version: {duckdb.__version__}") # Print version
+        print("DuckDB connection established.")
+        print(f"DuckDB Version: {duckdb.__version__}")
+
 
         # --- Load Delta Extension ---
         print("Attempting to load DuckDB delta extension...")
@@ -161,32 +209,24 @@ def handle_export():
         delta_read_function = None
         print("Checking available Delta read functions...")
         try:
-            # Check for read_delta first
-            functions_rd = con.sql("SELECT function_name FROM duckdb_functions() WHERE function_name = 'read_delta'").df()
-            if not functions_rd.empty:
+            # Check for read_delta first (more common)
+            functions = con.sql("SELECT function_name FROM duckdb_functions() WHERE function_name IN ('read_delta', 'delta_scan')").df()
+            if 'read_delta' in functions['function_name'].values:
                 delta_read_function = 'read_delta'
-                print("Found function: 'read_delta'")
+            elif 'delta_scan' in functions['function_name'].values:
+                 delta_read_function = 'delta_scan'
             else:
-                # If read_delta not found, check for delta_scan
-                print("'read_delta' not found. Checking for 'delta_scan'...")
-                functions_ds = con.sql("SELECT function_name FROM duckdb_functions() WHERE function_name = 'delta_scan'").df()
-                if not functions_ds.empty:
-                    delta_read_function = 'delta_scan'
-                    print("Found function: 'delta_scan'")
-                else:
-                    print("FATAL: Neither 'read_delta' nor 'delta_scan' function found after loading extension!")
-                    raise duckdb.CatalogException("Delta read function not available.")
-
+                 raise duckdb.CatalogException("Neither 'read_delta' nor 'delta_scan' found after loading extension!")
         except Exception as check_err:
              print(f"FATAL: Error checking for Delta read functions: {check_err}")
              raise check_err
+        print(f"Using Delta read function: '{delta_read_function}'")
 
-        # --- Create View using the determined function name ---
-        print(f"Creating temporary view 'disasters_view' using '{delta_read_function}'...")
-        con.sql(f"""
-            CREATE OR REPLACE TEMPORARY VIEW disasters_view AS
-            SELECT * FROM {delta_read_function}('{safe_lakehouse_path}');
-        """)
+
+        # --- Simplify Execution - Read Delta into a View First ---
+        print(f"Creating temporary view 'disasters_view' from Delta table: {safe_lakehouse_path}")
+        # Use CREATE OR REPLACE VIEW for idempotency
+        con.sql(f"CREATE OR REPLACE TEMPORARY VIEW disasters_view AS SELECT * FROM {delta_read_function}('{safe_lakehouse_path}');")
         print("Temporary view created.")
 
         # --- Execute Analysis Query on the View ---
@@ -195,22 +235,36 @@ def handle_export():
             province,
             disaster_category,
             SUM(losses_php_grand_total) AS total_losses_php,
-            SUM(farmers_affected) AS total_farmers_affected,
+            -- Use coalesce to handle potential NULLs (represented as NaN or None by Pandas Int64) before summing
+            -- DuckDB's SUM naturally ignores NULLs, but casting NULL to INTEGER might be needed depending on version
+            -- Safest approach: SUM ignores NULLs, then cast result if needed.
+            SUM(farmers_affected)::INTEGER AS total_farmers_affected,
             COUNT(*) AS number_of_events
-        FROM disasters_view
+        FROM disasters_view -- Query the temporary view
         GROUP BY province, disaster_category
         ORDER BY total_losses_php DESC
         LIMIT 1000
         """
+        # Note: If farmers_affected is Int64 and contains pd.NA, DuckDB might need explicit COALESCE or CAST.
+        # Alternative SUM: SUM(COALESCE(farmers_affected, 0))::INTEGER AS total_farmers_affected
 
         print("Executing analysis query on view...")
         results_df = con.sql(analysis_sql).to_df()
         print("Analysis complete.")
 
         # --- Process and Save Results ---
-        results_df['total_losses_php'] = results_df['total_losses_php'].astype(float)
-        results_df['total_farmers_affected'] = results_df['total_farmers_affected'].astype(float)
-        results_df['number_of_events'] = results_df['number_of_events'].astype(int)
+        print("Cleaning results for JSON...")
+        # Convert types AFTER query
+        results_df['total_losses_php'] = pd.to_numeric(results_df['total_losses_php'], errors='coerce').fillna(0.0)
+
+        # Apply robust integer conversion (handle potential NULLs/NaNs from SUM if source had issues)
+        results_df['total_farmers_affected'] = pd.to_numeric(results_df['total_farmers_affected'], errors='coerce').fillna(0).astype(int)
+        results_df['number_of_events'] = pd.to_numeric(results_df['number_of_events'], errors='coerce').fillna(0).astype(int)
+
+        # Replace NaN/Inf just before saving (important after numeric conversions)
+        results_df = results_df.replace([np.inf, -np.inf], None).where(pd.notna(results_df), None)
+        print("JSON cleaning complete.")
+
 
         results_df.to_json(API_OUTPUT_FILE, orient='records', indent=4)
         print(f"Successfully exported {len(results_df)} summary rows to '{API_OUTPUT_FILE}'.")
@@ -219,8 +273,16 @@ def handle_export():
 
     except duckdb.CatalogException as e:
          print(f"DUCKDB CATALOG ERROR during export: {e}")
+         import traceback
+         traceback.print_exc() # Print full trace for catalog errors too
+    except TypeError as e:
+         print(f"TYPE ERROR during export (often related to casting): {e}")
+         import traceback
+         traceback.print_exc() # Print full trace for type errors
     except Exception as e:
-        print(f"ERROR during export: {e}")
+        print(f"UNEXPECTED ERROR during export: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         if con:
             con.close()

@@ -7,11 +7,16 @@ import duckdb
 import deltalake # <<< Import deltalake to check its version
 from typing import Optional
 import datetime
+import math # For checking NaN
+import numpy as np # Import numpy for replacing infinite values
+import pandas as pd # Ensure pandas is imported if not already globally
 
 # --- Configuration ---
 BASE_DIR = '.'
 LAKEHOUSE_PATH = os.path.join(BASE_DIR, 'lakehouse_data/lakehouse_disasters')
-DUCKDB_FILE = os.path.join(BASE_DIR, 'lakehouse_data/analysis_db.duckdb')
+# --- <<< ADDED: Path to Farmer Registry Delta table >>> ---
+FARMER_REGISTRY_PATH = os.path.join(BASE_DIR, 'lakehouse_data/farmer_registry')
+# DUCKDB_FILE = os.path.join(BASE_DIR, 'lakehouse_data/analysis_db.duckdb') # Using in-memory now
 
 app = FastAPI()
 
@@ -36,108 +41,181 @@ def query_lakehouse(
     ):
     con = None
     safe_lakehouse_path = os.path.normpath(LAKEHOUSE_PATH)
+    # --- <<< ADDED: Path and check for Farmer Registry >>> ---
+    safe_farmer_registry_path = os.path.normpath(FARMER_REGISTRY_PATH)
+    farmer_registry_exists = os.path.exists(safe_farmer_registry_path)
 
     if not os.path.exists(safe_lakehouse_path):
         raise FileNotFoundError(f"Main Lakehouse table not found at '{safe_lakehouse_path}'. Run data import first.")
+    if not farmer_registry_exists:
+        print(f"Warning: Farmer registry table not found at '{safe_farmer_registry_path}'. Proceeding without join.")
+
 
     try:
-        # --- <<< CHANGE: Using IN-MEMORY again for simplicity, easier to ensure clean state >>> ---
         print("Connecting to DuckDB (in-memory)...")
         con = duckdb.connect(read_only=False)
-        # --- <<< PRINT VERSIONS >>> ---
         print(f"DuckDB Version: {duckdb.__version__}")
         print(f"Deltalake Library Version: {deltalake.__version__}")
-        # --- <<< END PRINT VERSIONS >>> ---
 
-        # --- <<< CHANGE: Force Uninstall/Install/Load Delta Extension >>> ---
+        # --- Force Load Delta Extension ---
         print("Attempting to FORCE load DuckDB delta extension...")
         try:
-            print("Uninstalling delta extension (if exists)...")
-            con.sql("FORCE UNINSTALL delta;") # Try to remove any old state
-        except Exception as uninstall_err:
-            print(f"Note: Uninstall failed (likely not installed): {uninstall_err}")
-
+            con.sql("FORCE UNINSTALL delta;")
+        except Exception: pass # Ignore if uninstall fails
         try:
-            print("Installing delta extension...")
             con.install_extension('delta')
-            print("Delta extension installed.")
-            print("Loading delta extension...")
             con.load_extension('delta')
             print("Delta extension loaded.")
         except Exception as install_load_err:
              print(f"FATAL: Failed to install or load delta extension: {install_load_err}")
              raise install_load_err
-        # --- <<< END FORCE LOAD >>> ---
-
 
         # --- Determine Correct Delta Function Name ---
         delta_read_function = None
-        # (Same checking logic as before)
         try:
-            functions_rd = con.sql("SELECT function_name FROM duckdb_functions() WHERE function_name = 'read_delta'").df()
-            if not functions_rd.empty:
+            # Check for read_delta first (more common)
+            functions = con.sql("SELECT function_name FROM duckdb_functions() WHERE function_name IN ('read_delta', 'delta_scan')").df()
+            if 'read_delta' in functions['function_name'].values:
                 delta_read_function = 'read_delta'
+            elif 'delta_scan' in functions['function_name'].values:
+                 delta_read_function = 'delta_scan'
             else:
-                functions_ds = con.sql("SELECT function_name FROM duckdb_functions() WHERE function_name = 'delta_scan'").df()
-                if not functions_ds.empty:
-                    delta_read_function = 'delta_scan'
-                else:
-                    raise duckdb.CatalogException("Neither 'read_delta' nor 'delta_scan' found.")
+                 raise duckdb.CatalogException("Neither 'read_delta' nor 'delta_scan' found after loading extension!")
         except Exception as check_err:
              print(f"FATAL: Error checking for Delta read functions: {check_err}")
              raise check_err
         print(f"Using Delta read function: '{delta_read_function}'")
 
 
-        # --- Dynamically Build WHERE Clause ---
+        # --- Dynamically Build WHERE Clause (Applies to disaster table 'd') ---
         where_clauses = []
         params = {}
-        # (Same WHERE clause building logic as before)
         if province:
-            where_clauses.append("province ILIKE $province")
+            where_clauses.append("d.province ILIKE $province")
             params['province'] = f"%{province}%"
         if municipality:
-            where_clauses.append("municipality ILIKE $municipality")
+            where_clauses.append("d.municipality ILIKE $municipality")
             params['municipality'] = f"%{municipality}%"
         if disaster_category:
-            where_clauses.append("disaster_category ILIKE $disaster_category")
+            where_clauses.append("d.disaster_category ILIKE $disaster_category")
             params['disaster_category'] = f"%{disaster_category}%"
         if start_date:
-            where_clauses.append("event_date_start >= $start_date")
+            where_clauses.append("d.event_date_start >= $start_date")
             params['start_date'] = start_date
         if end_date:
-            where_clauses.append("event_date_start <= $end_date")
+            # Use event_date_start for range check for simplicity
+            where_clauses.append("d.event_date_start <= $end_date")
             params['end_date'] = end_date
 
         where_sql = ""
         if where_clauses:
             where_sql = "WHERE " + " AND ".join(where_clauses)
 
-        # --- Construct Final Query ---
+        # --- Construct Final Query with JOIN ---
+        join_sql = ""
+        select_farmer_cols = ""
+        select_calculated_cols = ""
+
+        # Define default null values for farmer columns in case join fails or registry doesn't exist
+        default_farmer_select = """,
+            NULL AS registered_rice_farmers,
+            NULL AS total_declared_rice_area_ha,
+            NULL AS percentage_farmers_affected
+        """
+
+        if farmer_registry_exists:
+            # Columns to select if join is successful
+            select_farmer_cols = """,
+                fr.registered_rice_farmers,
+                fr.total_declared_rice_area_ha
+            """
+            # Calculation to perform if join is successful
+            select_calculated_cols = """,
+                CASE
+                    WHEN fr.registered_rice_farmers > 0 THEN ROUND((CAST(d.farmers_affected AS DOUBLE) / fr.registered_rice_farmers) * 100, 2)
+                    ELSE NULL
+                END AS percentage_farmers_affected
+            """
+            # The join clause itself
+            join_sql = f"""
+            LEFT JOIN {delta_read_function}('{safe_farmer_registry_path}') AS fr
+              ON d.province = fr.province AND d.municipality = fr.municipality
+            """
+            # Use the specific select columns if joining
+            default_farmer_select = "" # Clear default if join happens
+
+        # Combine parts into the final query
         query = f"""
-        SELECT *
-        FROM {delta_read_function}('{safe_lakehouse_path}')
-        {where_sql}
-        ORDER BY event_date_start DESC NULLS LAST
+        SELECT
+            d.* {select_farmer_cols} {select_calculated_cols} {default_farmer_select}
+        FROM
+            {delta_read_function}('{safe_lakehouse_path}') AS d -- Alias main table as 'd'
+        {join_sql} -- Add the join clause if applicable
+        {where_sql} -- Apply filters using alias 'd'
+        ORDER BY d.event_date_start DESC NULLS LAST -- Use alias 'd'
         LIMIT $limit
         """
         params['limit'] = limit if limit > 0 else 1000
 
         print(f"Executing query: {query}")
         print(f"With parameters: {params}")
+        # fetchdf() should handle basic type conversions from DuckDB to Pandas
         results = con.execute(query, params).fetchdf()
         print(f"Query returned {len(results)} rows.")
 
-        # Convert date columns for JSON
-        if 'event_date_start' in results.columns:
-            results['event_date_start'] = results['event_date_start'].dt.strftime('%Y-%m-%d').fillna('N/A')
-        if 'event_date_end' in results.columns:
-             results['event_date_end'] = results['event_date_end'].dt.strftime('%Y-%m-%d').fillna('N/A')
+        # --- Post-process for JSON Compliance ---
+        print("Cleaning results for JSON compliance (handling NaN, NaT, Inf)...")
 
+        # Handle Date columns specifically
+        for col in ['event_date_start', 'event_date_end']:
+            if col in results.columns:
+                # Convert to datetime if not already (might be object if contains errors)
+                results[col] = pd.to_datetime(results[col], errors='coerce')
+                # Format valid dates, replace NaT with None
+                results[col] = results[col].dt.strftime('%Y-%m-%d').where(results[col].notna(), None)
+
+        # Replace standard non-JSON compliant floats globally
+        results = results.replace([np.inf, -np.inf], None) # Replace Inf/-Inf first
+        # Replace remaining NaN specifically with None (more reliable than global replace for mixed types)
+        results = results.where(pd.notna(results), None)
+
+        # --- <<< FIX: Robust Integer Conversion >>> ---
+        # Convert columns intended to be integers
+        int_cols = ['year', 'farmers_affected', 'registered_rice_farmers', 'source_row_number']
+        for col in int_cols:
+             if col in results.columns:
+                 # 1. Convert to numeric, coercing errors to NaN
+                 # 2. Fill NaN (resulting from coercion or None) with 0
+                 # 3. Cast to integer
+                 results[col] = pd.to_numeric(results[col], errors='coerce').fillna(0).astype(int)
+        print("Ensured integer columns are integers.")
+        # --- <<< END FIX >>> ---
+
+
+        # Ensure float columns are rounded where appropriate and handle potential None (now 0.0)
+        float_cols = ['area_partially_damaged_ha', 'area_totally_damaged_ha', 'area_total_affected_ha',
+                      'losses_php_production_cost', 'losses_php_farm_gate', 'losses_php_grand_total',
+                      'total_declared_rice_area_ha', 'percentage_farmers_affected']
+        for col in float_cols:
+             if col in results.columns:
+                 # Ensure numeric, fill remaining issues with 0.0
+                 results[col] = pd.to_numeric(results[col], errors='coerce').fillna(0.0)
+                 # Round percentage if it exists and is not None/0.0
+                 if col == 'percentage_farmers_affected':
+                     results[col] = results[col].round(2)
+        print("Ensured float columns are floats and rounded percentage.")
+
+
+        print("JSON cleaning complete.")
+
+        # Convert entire DataFrame to dictionary records
         return results.to_dict(orient='records')
 
     except Exception as e:
         print(f"Error querying lakehouse: {e}")
+        # Log the full traceback for detailed debugging
+        import traceback
+        traceback.print_exc()
         raise
     finally:
         if con:
@@ -151,7 +229,6 @@ def root():
 
 @app.get("/api/disaster_summary")
 def get_disaster_summary(
-    # (Same endpoint parameters as before)
     province: Optional[str] = Query(None, description="Filter by province (case-insensitive, partial match)"),
     municipality: Optional[str] = Query(None, description="Filter by municipality (case-insensitive, partial match)"),
     disaster_category: Optional[str] = Query(None, description="Filter by disaster category (case-insensitive, partial match)"),
@@ -173,6 +250,22 @@ def get_disaster_summary(
          return JSONResponse(status_code=404, content={"status": "error", "message": str(e)})
     except Exception as e:
         error_message = f"An error occurred during query execution: {str(e)}"
-        print(error_message)
-        return JSONResponse(status_code=500, content={"status": "error", "message": error_message})
+        print(error_message) # Log the detailed error on the server
+        # Add traceback print here too for API level errors during query call
+        import traceback
+        traceback.print_exc()
+
+        # Check specifically for the ValueError that indicates JSON compliance issues
+        if isinstance(e, ValueError) and "JSON compliant" in str(e):
+             error_message = "Data contains non-JSON compliant values (NaN/Inf) after processing."
+             print("Potential NaN/Inf values were not fully cleaned.")
+             return JSONResponse(status_code=500, content={"status": "error", "message": error_message})
+        # Check for the specific TypeError related to casting
+        elif isinstance(e, TypeError) and "cannot safely cast" in str(e):
+             error_message = "Data type conversion error during processing. Check server logs."
+             print(f"Casting TypeError occurred: {e}")
+             return JSONResponse(status_code=500, content={"status": "error", "message": error_message})
+
+
+        return JSONResponse(status_code=500, content={"status": "error", "message": "Could not retrieve data. Please check server logs or query parameters."})
 

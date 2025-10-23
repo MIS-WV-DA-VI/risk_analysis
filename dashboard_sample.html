@@ -23,13 +23,12 @@
             width: 90%;
             max-width: 800px;
         }
-        /* Smaller containers for additional charts */
         .small-chart-container {
              position: relative;
              margin: auto;
-             height: 45vh; /* Slightly smaller */
-             width: 95%; /* Take up most of column width */
-             max-width: 500px; /* Limit max width */
+             height: 45vh;
+             width: 95%;
+             max-width: 500px;
         }
         input[type="date"] {
             appearance: none;
@@ -41,11 +40,16 @@
             background-color: white;
             cursor: pointer;
         }
+        /* Style for N/A values in the table */
+        .na-value {
+            color: #9ca3af; /* gray-400 */
+            font-style: italic;
+        }
     </style>
 </head>
 <body class="bg-gray-100 p-4 md:p-8">
 
-    <div class="max-w-7xl mx-auto bg-white rounded-lg shadow-md p-6"> <!-- Increased max-width slightly -->
+    <div class="max-w-7xl mx-auto bg-white rounded-lg shadow-md p-6">
         <h1 class="text-2xl font-bold text-center text-gray-800 mb-6">Disaster Impact Dashboard</h1>
 
         <!-- Filter Section -->
@@ -85,7 +89,7 @@
         <div id="noData" class="text-center text-gray-500 my-4 hidden">No data available for the selected filters.</div>
 
         <!-- Main Bar Chart Canvas -->
-        <div class="chart-container mb-12"> <!-- Increased bottom margin -->
+        <div class="chart-container mb-12">
             <canvas id="lossesChart"></canvas>
         </div>
 
@@ -117,12 +121,17 @@
                         <th class="px-4 py-3 border-b border-gray-200 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Disaster Category</th>
                         <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Losses PHP Grand Total</th>
                         <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Farmers Affected</th>
+                        <!-- <<< ADDED: New Table Headers >>> -->
+                        <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Registered Farmers</th>
+                        <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Declared Rice Area (ha)</th>
+                        <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Affected Farmers (%)</th>
                     </tr>
                 </thead>
                 <tbody id="dataTableBody" class="divide-y divide-gray-200">
                     <!-- Data rows will be inserted here -->
                 </tbody>
             </table>
+             <div id="tableNote" class="text-xs text-gray-500 mt-2 px-1 hidden">* Farmer registry data only available for Aklan province.</div>
         </div>
 
     </div>
@@ -139,6 +148,7 @@
         const noDataDiv = document.getElementById('noData');
         const dataTable = document.getElementById('dataTable');
         const dataTableBody = document.getElementById('dataTableBody');
+        const tableNote = document.getElementById('tableNote'); // <<< Get table note div
 
         // Chart elements and variables
         const barChartCanvas = document.getElementById('lossesChart');
@@ -170,18 +180,50 @@
             const intValue = parseInt(value, 10);
             return (isNaN(intValue) ? 0 : intValue).toLocaleString();
         }
+        // <<< ADDED: Helper to format percentage or show N/A >>>
+        function formatPercentage(value) {
+            const numericValue = parseFloat(value);
+             // Check for null, undefined, or NaN
+             if (value === null || value === undefined || isNaN(numericValue)) {
+                 return '<span class="na-value">N/A</span>';
+             }
+             return numericValue.toFixed(2) + '%';
+        }
+        // <<< ADDED: Helper to format farmer/area numbers or show N/A >>>
+        function formatRegistryNumber(value) {
+             const numericValue = parseFloat(value);
+             // Check for null, undefined, NaN, or 0 (0 might mean no data available in registry)
+             if (value === null || value === undefined || isNaN(numericValue) || numericValue === 0) {
+                 return '<span class="na-value">N/A</span>';
+             }
+             // Format area with decimals, farmers as integers
+             return value === parseInt(value, 10) ? formatInt(value) : numericValue.toFixed(2);
+        }
+        // <<< ADDED: Helper to display text or N/A >>>
+        function formatText(value) {
+             if (value === null || value === undefined || value === 'N/A' || value === 'Unknown' || value === '') {
+                 return '<span class="na-value">N/A</span>';
+             }
+             return value;
+        }
 
         // --- Fetch and Populate Filter Dropdowns ---
         async function populateFilters() {
             console.log("Populating filters...");
             try {
-                const response = await fetch(`${baseApiUrl}?limit=5000`);
+                // Fetch unfiltered data to get all possible provinces/categories
+                const response = await fetch(`${baseApiUrl}?limit=5000`); // Fetch a large sample
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
                 const result = await response.json();
                 if (result.status === 'success' && result.data) {
                     const allData = result.data;
+                    // Get unique, non-null/empty provinces and categories, then sort
                     const provinces = [...new Set(allData.map(item => item.province).filter(p => p && p !== 'Unknown'))].sort();
                     const categories = [...new Set(allData.map(item => item.disaster_category).filter(c => c && c !== 'Unknown'))].sort();
+
+                    // Clear existing options except the first "All" option
+                    while (provinceFilter.options.length > 1) provinceFilter.remove(1);
+                    while (categoryFilter.options.length > 1) categoryFilter.remove(1);
 
                     provinces.forEach(p => provinceFilter.add(new Option(p, p)));
                     categories.forEach(c => categoryFilter.add(new Option(c, c)));
@@ -204,6 +246,7 @@
             noDataDiv.classList.add('hidden');
             dataTable.classList.add('hidden');
             dataTableBody.innerHTML = '';
+            tableNote.classList.add('hidden'); // <<< Hide table note initially
             // Destroy existing charts
             if (barChartInstance) barChartInstance.destroy();
             if (timeSeriesChartInstance) timeSeriesChartInstance.destroy();
@@ -236,35 +279,40 @@
 
                 if (result.status === 'success' && result.data && result.data.length > 0) {
                     const data = result.data;
-                    console.log(`Filtered data fetched: ${data.length} items`);
+                    console.log(`Filtered data fetched: ${data.length} items`, data.slice(0, 5)); // Log first 5 items
 
                     // --- 1. Prepare Data for Bar Chart ---
                     let barGroupByKey = 'province';
-                    let barChartTitle = 'Total Disaster Losses by Province';
+                    let barChartTitle = 'Total Disaster Losses PHP Grand Total by Province';
                     if (province && !category) { barGroupByKey = 'disaster_category'; barChartTitle = `Losses by Disaster Category in ${province}`; }
                     else if (province && category) { barGroupByKey = 'municipality'; barChartTitle = `Losses by Municipality in ${province} (${category})`; }
                     else if (!province && category) { barGroupByKey = 'province'; barChartTitle = `Losses from ${category} by Province`; }
 
                     const lossesByBarGroup = data.reduce((acc, item) => {
                         const key = item[barGroupByKey] || 'Unknown';
+                        // Ensure losses_php_grand_total is treated as a number
                         const lossValue = parseFloat(item.losses_php_grand_total);
                         acc[key] = (acc[key] || 0) + (isNaN(lossValue) ? 0 : lossValue);
                         return acc;
                     }, {});
 
+                    // Sort groups by loss value descending for bar chart
+                    const sortedBarGroups = Object.entries(lossesByBarGroup).sort(([,a],[,b]) => b-a);
+                    const barLabels = sortedBarGroups.map(([key]) => key);
+                    const barValues = sortedBarGroups.map(([,value]) => value);
+
+
                     // --- 2. Prepare Data for Line Chart (Monthly Losses) ---
                     const lossesByMonth = data.reduce((acc, item) => {
-                        if (item.event_date_start && item.event_date_start !== 'N/A') {
-                            // Use dayjs to handle potential date format issues
-                            const monthYear = dayjs(item.event_date_start).isValid() ? dayjs(item.event_date_start).format('YYYY-MM') : 'Invalid Date';
-                             if (monthYear !== 'Invalid Date') {
+                        if (item.event_date_start && item.event_date_start !== null && item.event_date_start !== 'N/A') {
+                            const monthYear = dayjs(item.event_date_start).isValid() ? dayjs(item.event_date_start).format('YYYY-MM') : null;
+                             if (monthYear) {
                                 const lossValue = parseFloat(item.losses_php_grand_total);
                                 acc[monthYear] = (acc[monthYear] || 0) + (isNaN(lossValue) ? 0 : lossValue);
                             }
                         }
                         return acc;
                     }, {});
-                    // Sort months chronologically
                     const sortedMonths = Object.keys(lossesByMonth).sort();
                     const monthlyLossValues = sortedMonths.map(month => lossesByMonth[month]);
 
@@ -275,8 +323,10 @@
                         acc[key] = (acc[key] || 0) + (isNaN(lossValue) ? 0 : lossValue);
                         return acc;
                     }, {});
-                    const categoryLabels = Object.keys(lossesByCategory);
-                    const categoryLossValues = Object.values(lossesByCategory);
+                    // Filter out categories with zero loss for pie chart
+                    const filteredPieData = Object.entries(lossesByCategory).filter(([,value]) => value > 0);
+                    const categoryLabels = filteredPieData.map(([key]) => key);
+                    const categoryLossValues = filteredPieData.map(([,value]) => value);
 
 
                     // --- Create Bar Chart ---
@@ -284,88 +334,102 @@
                     barChartInstance = new Chart(barCtx, {
                         type: 'bar',
                         data: {
-                            labels: Object.keys(lossesByBarGroup),
-                            datasets: [{ label: 'Losses PHP Grand Total', data: Object.values(lossesByBarGroup), backgroundColor: 'rgba(54, 162, 235, 0.6)', borderColor: 'rgba(54, 162, 235, 1)', borderWidth: 1 }]
+                            labels: barLabels, // Use sorted labels
+                            datasets: [{
+                                label: 'Losses PHP Grand Total',
+                                data: barValues, // Use sorted values
+                                backgroundColor: 'rgba(54, 162, 235, 0.6)',
+                                borderColor: 'rgba(54, 162, 235, 1)',
+                                borderWidth: 1
+                             }]
                         },
-                        options: { /* ... (options from previous version) ... */
-                            responsive: true, maintainAspectRatio: false,
-                            scales: { y: { beginAtZero: true, title: { display: true, text: 'Losses PHP Grand Total' }, ticks: { callback: formatNumber } }, x: { title: { display: true, text: barGroupByKey.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) } } },
-                            plugins: { legend: { display: false }, title: { display: true, text: barChartTitle }, tooltip: { callbacks: { label: ctx => `Losses PHP Grand Total: ${formatCurrency(ctx.parsed.y)}` } } }
+                        options: {
+                            responsive: true, maintainAspectRatio: false, indexAxis: 'y', // Make it horizontal for potentially many labels
+                             scales: {
+                                 y: { // Now the category axis
+                                     beginAtZero: true,
+                                     title: { display: true, text: barGroupByKey.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) }
+                                 },
+                                 x: { // Now the value axis
+                                      title: { display: true, text: 'Losses PHP Grand Total' },
+                                      ticks: { callback: formatNumber }
+                                 }
+                            },
+                            plugins: {
+                                legend: { display: false },
+                                title: { display: true, text: barChartTitle, font: { size: 16 } },
+                                tooltip: { callbacks: { label: ctx => `Losses PHP Grand Total: ${formatCurrency(ctx.parsed.x)}` } } // x for horizontal bar
+                            }
                         }
                     });
 
                     // --- Create Line Chart ---
-                    const lineCtx = timeSeriesCanvas.getContext('2d');
-                    timeSeriesChartInstance = new Chart(lineCtx, {
-                         type: 'line',
-                         data: {
-                             labels: sortedMonths,
-                             datasets: [{
-                                 label: 'Monthly Total Losses (PHP)',
-                                 data: monthlyLossValues,
-                                 borderColor: 'rgb(75, 192, 192)',
-                                 backgroundColor: 'rgba(75, 192, 192, 0.2)',
-                                 tension: 0.1,
-                                 fill: true
-                             }]
-                         },
-                         options: {
-                             responsive: true, maintainAspectRatio: false,
-                             scales: { y: { beginAtZero: true, title: { display: true, text: 'Total Losses (PHP)' }, ticks: { callback: formatNumber } }, x: { title: { display: true, text: 'Month' } } },
-                             plugins: { legend: { display: false }, title: { display: false }, tooltip: { callbacks: { label: ctx => `Total Losses: ${formatCurrency(ctx.parsed.y)}` } } }
-                         }
-                    });
+                    if (sortedMonths.length > 0) { // Only render if data exists
+                        const lineCtx = timeSeriesCanvas.getContext('2d');
+                        timeSeriesChartInstance = new Chart(lineCtx, {
+                             type: 'line',
+                             data: { labels: sortedMonths, datasets: [{ label: 'Monthly Total Losses (PHP)', data: monthlyLossValues, borderColor: 'rgb(75, 192, 192)', backgroundColor: 'rgba(75, 192, 192, 0.2)', tension: 0.1, fill: true }] },
+                             options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, title: { display: true, text: 'Total Losses (PHP)' }, ticks: { callback: formatNumber } }, x: { title: { display: true, text: 'Month' } } }, plugins: { legend: { display: false }, title: { display: false }, tooltip: { callbacks: { label: ctx => `Total Losses: ${formatCurrency(ctx.parsed.y)}` } } } }
+                        });
+                    } else {
+                         // Optionally display a message if no time data
+                         timeSeriesCanvas.getContext('2d').fillText('No monthly data to display.', 10, 50);
+                    }
+
 
                     // --- Create Pie Chart ---
-                    const pieCtx = categoryPieCanvas.getContext('2d');
-                    // Define more colors for the pie chart segments
-                    const pieColors = [
-                        'rgba(255, 99, 132, 0.7)', 'rgba(54, 162, 235, 0.7)', 'rgba(255, 206, 86, 0.7)',
-                        'rgba(75, 192, 192, 0.7)', 'rgba(153, 102, 255, 0.7)', 'rgba(255, 159, 64, 0.7)',
-                        'rgba(199, 199, 199, 0.7)', 'rgba(83, 102, 255, 0.7)', 'rgba(100, 255, 100, 0.7)'
-                        // Add more colors if you expect many categories
-                    ];
-                    categoryPieChartInstance = new Chart(pieCtx, {
-                         type: 'pie',
-                         data: {
-                             labels: categoryLabels,
-                             datasets: [{
-                                 label: 'Losses by Category (PHP)',
-                                 data: categoryLossValues,
-                                 backgroundColor: pieColors.slice(0, categoryLabels.length), // Use defined colors
-                                 hoverOffset: 4
-                             }]
-                         },
-                         options: {
-                             responsive: true, maintainAspectRatio: false,
-                             plugins: { legend: { position: 'top' }, title: { display: false }, tooltip: { callbacks: { label: ctx => `${ctx.label}: ${formatCurrency(ctx.parsed)}` } } }
-                         }
-                    });
+                     if (categoryLabels.length > 0) { // Only render if data exists
+                        const pieCtx = categoryPieCanvas.getContext('2d');
+                        const pieColors = ['rgba(255, 99, 132, 0.7)', 'rgba(54, 162, 235, 0.7)', 'rgba(255, 206, 86, 0.7)', 'rgba(75, 192, 192, 0.7)', 'rgba(153, 102, 255, 0.7)', 'rgba(255, 159, 64, 0.7)', 'rgba(199, 199, 199, 0.7)', 'rgba(83, 102, 255, 0.7)', 'rgba(100, 255, 100, 0.7)'];
+                        categoryPieChartInstance = new Chart(pieCtx, {
+                             type: 'pie',
+                             data: { labels: categoryLabels, datasets: [{ label: 'Losses by Category (PHP)', data: categoryLossValues, backgroundColor: pieColors.slice(0, categoryLabels.length), hoverOffset: 4 }] },
+                             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'top' }, title: { display: false }, tooltip: { callbacks: { label: ctx => `${ctx.label}: ${formatCurrency(ctx.parsed)}` } } } }
+                        });
+                    } else {
+                         categoryPieCanvas.getContext('2d').fillText('No category data to display.', 10, 50);
+                    }
+
 
                     // --- Populate Table (Limited Rows) ---
-                    const tableLimit = 100; // Limit rows shown in table
+                    const tableLimit = 100;
+                    // <<< UPDATED: Check for farmer data presence to show note >>>
+                    let farmerDataAvailable = false;
                     data.slice(0, tableLimit).forEach(item => {
                         const row = document.createElement('tr');
-                        row.className = 'hover:bg-gray-50';
+                        row.className = 'hover:bg-gray-50 text-sm'; // Ensure consistent text size
+
+                        // <<< ADDED: Check if farmer registry columns exist and have non-null/non-zero values >>>
+                        const hasFarmerData = item.registered_rice_farmers !== null && item.registered_rice_farmers !== undefined && item.registered_rice_farmers > 0;
+                        if (hasFarmerData) farmerDataAvailable = true;
+
                         row.innerHTML = `
-                            <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-700">${item.event_date_start || 'N/A'}</td>
-                            <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-700">${item.province || 'N/A'}</td>
-                            <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-700">${item.municipality || 'N/A'}</td>
-                            <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-700">${item.commodity || 'N/A'}</td>
-                            <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-700">${item.disaster_category || 'N/A'}</td>
-                            <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-700 text-right">${formatCurrency(item.losses_php_grand_total)}</td>
-                            <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-700 text-right">${formatInt(item.farmers_affected)}</td>
+                            <td class="px-4 py-2 whitespace-nowrap text-gray-700">${formatText(item.event_date_start)}</td>
+                            <td class="px-4 py-2 whitespace-nowrap text-gray-700">${formatText(item.province)}</td>
+                            <td class="px-4 py-2 whitespace-nowrap text-gray-700">${formatText(item.municipality)}</td>
+                            <td class="px-4 py-2 whitespace-nowrap text-gray-700">${formatText(item.commodity)}</td>
+                            <td class="px-4 py-2 whitespace-nowrap text-gray-700">${formatText(item.disaster_category)}</td>
+                            <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatCurrency(item.losses_php_grand_total)}</td>
+                            <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatInt(item.farmers_affected)}</td>
+                            <!-- <<< UPDATED: Use formatters for new columns >>> -->
+                            <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatRegistryNumber(item.registered_rice_farmers)}</td>
+                            <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatRegistryNumber(item.total_declared_rice_area_ha)}</td>
+                            <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatPercentage(item.percentage_farmers_affected)}</td>
                         `;
                         dataTableBody.appendChild(row);
                      });
                      dataTable.classList.remove('hidden');
+                     // <<< UPDATED: Show note only if farmer data was actually present >>>
+                     if (farmerDataAvailable) {
+                         tableNote.classList.remove('hidden');
+                     }
 
 
                     loadingDiv.style.display = 'none';
 
                 } else if (result.status === 'success' && (!result.data || result.data.length === 0)) {
                     loadingDiv.style.display = 'none';
-                    noDataDiv.classList.remove('hidden'); // Show no data message
+                    noDataDiv.classList.remove('hidden');
                     console.log("API returned success but no data for selected filters.");
                 }
                  else {

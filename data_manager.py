@@ -13,6 +13,7 @@ BASE_DIR = '.' # Current directory
 RAW_DATA_DIR = os.path.join(BASE_DIR, 'raw_data')
 PROCESSED_DATA_DIR = os.path.join(RAW_DATA_DIR, 'processed')
 LAKEHOUSE_PATH = os.path.join(BASE_DIR, 'lakehouse_data/lakehouse_disasters') # Main clean data table
+FARMER_LAKEHOUSE_PATH = os.path.join(BASE_DIR, 'lakehouse_data/farmer_registry') # Path to the farmer table
 API_OUTPUT_FILE = os.path.join(BASE_DIR, 'api_output/api_data.json')
 DUCKDB_FILE = os.path.join(BASE_DIR, 'lakehouse_data/analysis_db.duckdb')
 
@@ -173,10 +174,17 @@ def handle_export():
     os.makedirs(os.path.dirname(DUCKDB_FILE), exist_ok=True) # Ensure DB file directory exists
 
     safe_lakehouse_path = os.path.normpath(LAKEHOUSE_PATH) # Ensure path is OS-correct
+    safe_farmer_path = os.path.normpath(FARMER_LAKEHOUSE_PATH) # Path for farmer registry
 
     if not os.path.exists(safe_lakehouse_path):
         print(f"ERROR: Main Lakehouse table not found at '{safe_lakehouse_path}'.")
         print("Please run the 'import' command first.")
+        print("--- Export Failed ---")
+        return
+
+    if not os.path.exists(safe_farmer_path):
+        print(f"ERROR: Farmer Registry table not found at '{safe_farmer_path}'.")
+        print("Please run the 'process_farmer_registry.py' script first.")
         print("--- Export Failed ---")
         return
 
@@ -229,20 +237,51 @@ def handle_export():
         con.sql(f"CREATE OR REPLACE TEMPORARY VIEW disasters_view AS SELECT * FROM {delta_read_function}('{safe_lakehouse_path}');")
         print("Temporary view created.")
 
+        print(f"Creating temporary view 'farmers_view' from Delta table: {safe_farmer_path}")
+        con.sql(f"CREATE OR REPLACE TEMPORARY VIEW farmers_view AS SELECT * FROM {delta_read_function}('{safe_farmer_path}');")
+
+        print("Creating pre-aggregated view 'province_farmer_summary'...")
+        # Pre-aggregate farmer data by province to avoid join multiplication
+        con.sql("""
+            CREATE OR REPLACE TEMPORARY VIEW province_farmer_summary AS
+            SELECT
+                province,
+                SUM(registered_rice_farmers) AS total_registered_farmers,
+                SUM(total_declared_rice_area_ha) AS total_rice_area
+            FROM farmers_view
+            GROUP BY province;
+        """)
+        print("Farmer data views created.")
+
+
         # --- Execute Analysis Query on the View ---
         analysis_sql = f"""
+        WITH aggregated_disasters AS (
+            SELECT
+                province,
+                disaster_category,
+                SUM(losses_php_grand_total) AS total_losses_php,
+                -- Use coalesce to handle potential NULLs (represented as NaN or None by Pandas Int64) before summing
+                -- DuckDB's SUM naturally ignores NULLs, but casting NULL to INTEGER might be needed depending on version
+                -- Safest approach: SUM ignores NULLs, then cast result if needed.
+                SUM(farmers_affected)::INTEGER AS total_farmers_affected,
+                COUNT(*) AS number_of_events
+            FROM disasters_view -- Query the main disasters view
+            GROUP BY province, disaster_category
+        )
         SELECT
-            province,
-            disaster_category,
-            SUM(losses_php_grand_total) AS total_losses_php,
-            -- Use coalesce to handle potential NULLs (represented as NaN or None by Pandas Int64) before summing
-            -- DuckDB's SUM naturally ignores NULLs, but casting NULL to INTEGER might be needed depending on version
-            -- Safest approach: SUM ignores NULLs, then cast result if needed.
-            SUM(farmers_affected)::INTEGER AS total_farmers_affected,
-            COUNT(*) AS number_of_events
-        FROM disasters_view -- Query the temporary view
-        GROUP BY province, disaster_category
-        ORDER BY total_losses_php DESC
+            d.province,
+            d.disaster_category,
+            d.total_losses_php,
+            d.total_farmers_affected,
+            f.total_registered_farmers,
+            -- Calculate percentage of affected farmers, handle division by zero
+            (d.total_farmers_affected / NULLIF(f.total_registered_farmers, 0)) * 100 AS pct_farmers_affected,
+            d.number_of_events,
+            f.total_rice_area
+        FROM aggregated_disasters d
+        LEFT JOIN province_farmer_summary f ON d.province = f.province
+        ORDER BY d.total_losses_php DESC
         LIMIT 1000
         """
         # Note: If farmers_affected is Int64 and contains pd.NA, DuckDB might need explicit COALESCE or CAST.
@@ -256,9 +295,12 @@ def handle_export():
         print("Cleaning results for JSON...")
         # Convert types AFTER query
         results_df['total_losses_php'] = pd.to_numeric(results_df['total_losses_php'], errors='coerce').fillna(0.0)
+        results_df['total_rice_area'] = pd.to_numeric(results_df['total_rice_area'], errors='coerce').fillna(0.0)
+        results_df['pct_farmers_affected'] = pd.to_numeric(results_df['pct_farmers_affected'], errors='coerce').fillna(0.0)
 
         # Apply robust integer conversion (handle potential NULLs/NaNs from SUM if source had issues)
         results_df['total_farmers_affected'] = pd.to_numeric(results_df['total_farmers_affected'], errors='coerce').fillna(0).astype(int)
+        results_df['total_registered_farmers'] = pd.to_numeric(results_df['total_registered_farmers'], errors='coerce').fillna(0).astype(int)
         results_df['number_of_events'] = pd.to_numeric(results_df['number_of_events'], errors='coerce').fillna(0).astype(int)
 
         # Replace NaN/Inf just before saving (important after numeric conversions)

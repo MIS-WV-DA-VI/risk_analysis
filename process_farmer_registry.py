@@ -53,8 +53,8 @@ def is_municipality_row_strict(row):
     if area_col not in row or pd.isna(row[area_col]): return False
 
     name_str = str(row[name_col]).strip()
-    # Check if the name is non-empty, fully uppercase, and contains only letters/spaces
-    return bool(name_str) and name_str.isupper() and bool(re.match(r'^[A-Z\s]+$', name_str))
+    # Check if the name is non-empty, fully uppercase, and contains only letters/spaces/hyphens
+    return bool(name_str) and name_str.isupper() and bool(re.match(r'^[A-Z\s-]+$', name_str))
 
 def process_farmer_xlsx_to_delta(input_file_path, write_mode='append'):
     """
@@ -266,4 +266,5 @@ if __name__ == "__main__":
     if failed_count > 0:
         print(f"Failed to process or move {failed_count} file(s). Please check logs.")
     print("--- Farmer Registry Processing Complete ---")
+
 

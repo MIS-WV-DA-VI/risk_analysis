@@ -21,7 +21,7 @@ FARMER_REGISTRY_PATH = os.path.join(BASE_DIR, 'lakehouse_data/farmer_registry')
 app = FastAPI()
 
 # --- CORS Middleware ---
-origins = ["http://localhost", "http://localhost:8000", "http://127.0.0.1", "http://127.0.0.1:8000", "null"]
+origins = ["http://localhost", "http://localhost:8000", "http://127.0.0.1", "http://127.0.0.1:8000", "https://dawvinfosys.test", "https://27.110.161.135", "null"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,

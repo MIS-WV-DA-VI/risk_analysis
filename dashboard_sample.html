@@ -32,7 +32,7 @@
              width: 95%;
              max-width: 500px;
         }
-        input[type="date"] {
+        input[type="date"], select {
             appearance: none;
             -webkit-appearance: none;
             -moz-appearance: none;
@@ -185,7 +185,14 @@
         dayjs.extend(dayjs_plugin_quarterOfYear); // <<< ADDED
 
         // --- Constants and Globals ---
-        const baseApiUrl = 'http://localhost:8000/api/disaster_summary';
+        // <<< IMPORTANT: Update this URL to point to your live API >>>
+        // This example assumes your portal and API are on the same server
+        // and the reverse proxy is set up.
+        // If your Apache is listening on 8445, you'd use:
+        const baseApiUrl = 'https://27.110.161.135:8445/api/disaster_summary'; // Use the specific IP and port
+        // Or if you are running locally for presentation:
+        // const baseApiUrl = 'http://127.0.0.1:8002/api/disaster_summary';
+
         const loadingDiv = document.getElementById('loading');
         const errorDiv = document.getElementById('error');
         const noDataDiv = document.getElementById('noData');
@@ -578,7 +585,7 @@
                         row.innerHTML = `
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700">${formatText(item.event_date_start)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700">${formatText(item.province)}</td>
-                            <td class="px-4 py-2 whitespace-nowTIErap text-gray-700">${formatText(item.municipality)}</td>
+                            <td class="px-4 py-2 whitespace-nowrap text-gray-700">${formatText(item.municipality)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700">${formatText(item.commodity)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700">${formatText(item.disaster_category)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatCurrency(item.losses_php_grand_total)}</td>

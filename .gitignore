@@ -8,9 +8,9 @@ pycache/
 
 lakehouse_data/
 api_output/
-raw_data/
+raw_data/processed
 error_input/
-farmer_registry_input/
+farmer_registry_input/processed
 
 #Optional: Ignore raw data if you don't want it in Git (uncomment if needed)
 raw_data/*.csv

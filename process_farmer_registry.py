@@ -23,15 +23,16 @@ EXPECTED_RAW_COLS = ['Municipality/Brgy', 'Count of Rice Farmers', 'Total Declar
 FILENAME_PROVINCE_REGEX = re.compile(r"RSBSA (.*?) Rice Farmers", re.IGNORECASE)
 
 def extract_province_from_filename(filename):
-    """Extracts province name from filename using regex."""
-    match = FILENAME_PROVINCE_REGEX.search(filename)
+    """
+    Extracts the province name from the filename using REGEX.
+    e.g., "RSBSA Aklan Rice Farmers.xlsx" -> "AKLAN"
+    """
+    basename = os.path.basename(filename)
+    match = FILENAME_PROVINCE_REGEX.search(basename)
     if match:
-        province_name = match.group(1).strip().upper()
-        print(f"Extracted province: {province_name}")
-        return province_name
-    else:
-        print(f"WARNING: Could not extract province from filename: {filename}. Defaulting to 'UNKNOWN'.")
-        return 'UNKNOWN'
+        return match.group(1).strip().upper()
+    print(f"WARNING: Could not extract province from filename: {basename}")
+    return "UNKNOWN"
 
 def clean_municipality_name_strict(name):
     """Cleans municipality names: Uppercase, strip whitespace."""
@@ -57,18 +58,12 @@ def is_municipality_row_strict(row):
 
 def process_farmer_xlsx_to_delta(input_file_path, write_mode='append'):
     """
-    Reads raw farmer XLSX, cleans municipality data, and writes directly to Delta Lake.
+    Reads raw farmer XLSX, cleans municipality data, extracts province from filename,
+    and writes to a partitioned Delta Lake table.
     Uses the specified write_mode ('append', 'overwrite', or 'dynamic_overwrite').
     """
     file_basename = os.path.basename(input_file_path)
     print(f"Processing farmer registry file: {file_basename}...")
-
-    # --- Extract Province from Filename ---
-    province_name = extract_province_from_filename(file_basename)
-    if province_name == 'UNKNOWN':
-        print(f"ERROR: Halting processing for {file_basename} due to unknown province.")
-        return False # Fail processing if province can't be identified
-
     try:
         # Read Excel file
         # Make sure column names are stripped during read
@@ -88,6 +83,13 @@ def process_farmer_xlsx_to_delta(input_file_path, write_mode='append'):
     if df.empty:
         print("Skipping empty input file.")
         return True # Treat as success for moving file
+
+    # --- Extract Province from Filename ---
+    province_name = extract_province_from_filename(file_basename)
+    if province_name == "UNKNOWN":
+        print(f"ERROR: Could not determine province for {file_basename}. Skipping file.")
+        return False # Failed processing
+    print(f"Extracted province: {province_name}")
 
     # --- Check for expected raw columns ---
     missing_cols = [col for col in EXPECTED_RAW_COLS if col not in df.columns]
@@ -124,176 +126,127 @@ def process_farmer_xlsx_to_delta(input_file_path, write_mode='append'):
 
     # --- Write Directly to Delta Table ---
     
-    # --- Delta Write Configuration ---
-    # These variables will be set based on the write_mode
-    final_write_mode = 'append' # The mode passed to deltalake library
-    partition_filters = None
-    schema_mode = 'merge' # Default is 'merge' (safe for append/dynamic)
-    
-    current_province = final_df['province'].iloc[0].upper() # Should match province_name
-
-    if write_mode == 'overwrite':
-        # Full Table Overwrite: Wipes everything.
-        final_write_mode = 'overwrite'
-        schema_mode = 'overwrite' # Overwrite schema as well
-        print(f"Writing data... Mode: FULL TABLE OVERWRITE (using data from {current_province})")
-    
-    elif write_mode == 'dynamic_overwrite':
-        # Dynamic Partition Overwrite: Wipes only this province's partition.
-        # We will use a Delete + Append strategy for broader compatibility
-        final_write_mode = 'dynamic_overwrite' # Custom flag, not passed to deltalake
-        schema_mode = 'merge'
-        # partition_filters is no longer used here
-        print(f"Preparing for: DYNAMIC PARTITION OVERWRITE for province = '{current_province}'")
-
-    else: # 'append'
-        # Standard Append: Adds data to the partition.
-        final_write_mode = 'append'
-        schema_mode = 'merge'
-        print(f"Writing data... Mode: APPEND to province = '{current_province}'")
-    # --- End Configuration ---
-
-    print(f"Writing municipality data to Delta table: {FARMER_LAKEHOUSE_PATH}...")
+    # Ensure path is normalized for the OS
+    safe_lakehouse_path = os.path.normpath(FARMER_LAKEHOUSE_PATH)
+    print(f"Writing municipality data to Delta table: {safe_lakehouse_path}...")
     try:
         if write_mode == 'dynamic_overwrite':
-            # --- Robust Dynamic Partition Overwrite (Delete + Append) ---
-            # This method works across more library versions
+            # --- Workaround for broken dt.delete() on partitions with spaces ---
+            # Strategy: Read all *other* partitions, add this new data,
+            # and do a full overwrite with the combined data.
+            
+            current_province = final_df['province'].iloc[0]
+            print(f"Preparing for DYNAMIC OVERWRITE for province = '{current_province}'")
 
-            # Ensure the table exists before trying to load/delete from it
-            if not os.path.exists(FARMER_LAKEHOUSE_PATH):
-                 print("Table does not exist. Writing data for the first time (as append)...")
-                 # Table doesn't exist, so we just do a normal initial write
-                 write_deltalake(
-                     FARMER_LAKEHOUSE_PATH,
-                     final_df,
-                     mode='append', # Start with append
-                     partition_by=['province'],
-                     schema_mode='merge'
-                 )
-            else:
-                print(f"Loading Delta table at: {FARMER_LAKEHOUSE_PATH}")
-                dt = DeltaTable(FARMER_LAKEHOUSE_PATH)
-                
-                # --- NEW: Safety check before deleting ---
-                print(f"Checking for existing data in partition: {current_province}")
+            df_to_write = final_df # Start with the new data
+            
+            # Check if table exists before trying to read
+            if os.path.exists(safe_lakehouse_path):
+                print(f"Loading existing table to read other partitions...")
                 try:
-                    # Query to see if any data already exists for this partition
-                    existing_data = dt.to_pandas(
-                        filters=[('province', '=', current_province)],
-                        columns=['province'] # Only need one column to check
-                    )
-                except Exception as e:
-                    print(f"Could not query existing data (table might be new or empty): {e}")
-                    existing_data = pd.DataFrame() # Assume empty
-
-                if not existing_data.empty:
-                    # --- FIX for spaces in predicate ---
-                    # Use "IN ('VALUE')" syntax, which is often more robustly parsed
-                    # than " = 'VALUE' " for strings with spaces.
-                    delete_predicate = f"province IN ('{current_province}')"
-                    print(f"Deleting existing data for partition using predicate: {delete_predicate}")
-                    # 1. Delete the partition
-                    dt.delete(predicate=delete_predicate)
-                else:
-                    print(f"No existing data found for {current_province}. Skipping delete step.")
+                    dt = DeltaTable(safe_lakehouse_path)
+                    # Load all data WHERE province != current_province
+                    df_others = dt.to_pandas(filters=[("province", "!=", current_province)])
+                    
+                    if not df_others.empty:
+                        print(f"Loaded {len(df_others)} rows from other partitions.")
+                        # Combine old data (others) + new data (current)
+                        # Use ignore_index=True to prevent duplicate index 'source.__index_level_0__' error
+                        df_to_write = pd.concat([df_others, final_df], ignore_index=True)
+                    else:
+                        print(f"No data found for other partitions. Writing only new data.")
                 
-                print(f"Appending new data for partition: {current_province}")
-                # 2. Append the new data
-                # FIX: Use the top-level write_deltalake() function instead of dt.write()
-                write_deltalake(
-                    FARMER_LAKEHOUSE_PATH, # Pass the table path
-                    final_df,
-                    mode='append',
-                    schema_mode='merge',
-                    partition_by=['province'] # Re-specify partition_by for the writer
-                )
+                except Exception as e:
+                    print(f"Could not read existing table (may be empty or new): {e}")
+                    print("Proceeding to write new data only.")
+            
+            print(f"Performing full table OVERWRITE with {len(df_to_write)} total rows to apply dynamic change...")
+            
+            # Perform a full 'overwrite' with the combined DataFrame
+            write_deltalake(
+                safe_lakehouse_path,
+                df_to_write,
+                mode='overwrite', # Use the overwrite mode that works
+                schema_mode='overwrite', # Use older, compatible syntax
+                partition_by=['province']
+            )
             print(f"Successfully performed dynamic overwrite for {current_province}.")
 
         else:
-            # --- Handle Full Overwrite or Standard Append ---
-            # The original write_deltalake function is fine for this.
-            # Note: partition_filters is None for these modes.
+            # This handles normal 'append' and the first file of 'overwrite'
+            final_write_mode = write_mode
+            schema_settings = {}
+            if write_mode == 'overwrite':
+                schema_settings['schema_mode'] = 'overwrite' # Use older, compatible syntax
+            else:
+                schema_settings['schema_mode'] = 'merge'
+
             write_deltalake(
-                FARMER_LAKEHOUSE_PATH,
+                safe_lakehouse_path,
                 final_df,
-                mode=final_write_mode, # This will be 'overwrite' or 'append'
-                partition_by=['province'], # partition_by is required for initial write
-                schema_mode=schema_mode
-                # No partition_filters here
+                mode=final_write_mode,
+                partition_by=['province'],
+                **schema_settings
             )
             print(f"Successfully wrote data using mode: {final_write_mode}")
 
         return True # Indicate success
     
-    except AttributeError as e:
-        # Catch the specific error we just saw
-        if "'DeltaTable' object has no attribute 'write'" in str(e):
-             print("\n--- HINT ---")
-             print("Caught the 'no attribute 'write'' error. This is a library version issue.")
-             print("I have updated the script to use the top-level 'write_deltalake()' function instead.")
-             print("Please try running the script again.")
-             print("--------------\n")
-        else:
-             # Re-raise other AttributeErrors
-             print(f"ERROR (AttributeError): {e}")
-        return False
     except Exception as e:
-        print(f"ERROR writing to Delta Lake table {FARMER_LAKEHOUSE_PATH}: {e}")
-        # Add specific advice for the error we saw
-        if "unexpected keyword argument 'partition_filters'" in str(e):
-             print("\n--- HINT ---")
-             print("The error confirms your 'deltalake' library version is too old for the original method.")
-             print("I have updated the script to use a more compatible (Delete then Append) method.")
-             print("Please try running the script again.")
-             print("If it still fails, please upgrade your library with:")
+        print(f"ERROR writing to Delta Lake table {safe_lakehouse_path}: {e}")
+        # Check if it's the known predicate error and give advice
+        if "Predicate" in str(e) or "filter" in str(e) or "delete" in str(e):
+             print("\n--------------")
+             print("HINT: If this error involves a partition with spaces (e.g., 'NEGROS OCCIDENTAL'),")
+             print("your version of 'deltalake' may have a bug in its delete function.")
+             print("Try upgrading the library:")
              print("pip install --upgrade deltalake")
              print("--------------\n")
         return False
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Clean farmer registry XLSX and load municipality data into a partitioned Delta Lake table.")
+    parser = argparse.ArgumentParser(description="Clean farmer registry XLSX files and load municipality data into a partitioned Delta Lake table.")
     parser.add_argument('--mode', type=str, choices=['overwrite', 'append', 'dynamic_overwrite'], default='append',
-                        help="Write mode for Delta Lake: "
-                             "'append' (default): Add new data to partitions. "
-                             "'overwrite': Wipe the *entire table* with the first file, then append others. "
-                             "'dynamic_overwrite': Overwrite *only* the specific partitions for the files being processed.")
+                        help="Write mode for Delta Lake: \n"
+                             "'append' (default): Add new data. \n"
+                             "'overwrite': Replace entire table with the first file processed. \n"
+                             "'dynamic_overwrite': Replace only the partition matching the file's province.")
     args = parser.parse_args()
 
-    # Use the mode specified by the user
+    # Use the mode specified by the user (defaults to 'append')
     selected_mode = args.mode
-    print(f"--- Starting Farmer Registry Processing (XLSX -> Delta) ---")
+    print(f"--- Starting Farmer Registry Processing (XLSM -> Delta) ---")
     print(f"--- Mode selected: {selected_mode.upper()} ---")
 
 
     # Ensure directories exist
     os.makedirs(FARMER_INPUT_DIR, exist_ok=True)
     os.makedirs(PROCESSED_FARMER_DIR, exist_ok=True) # Directory for processed XLSX
-    # No need to create FARMER_LAKEHOUSE_PATH, write_deltalake does it
+    os.makedirs(os.path.dirname(FARMER_LAKEHOUSE_PATH), exist_ok=True)
 
-    # Find raw farmer registry XLSX files
-    # Looks for "RSBSA " followed by anything, then " Rice Farmers*.xlsx"
-    raw_files_pattern = os.path.join(FARMER_INPUT_DIR, 'RSBSA * Rice Farmers*.xlsx')
-    raw_files = glob.glob(raw_files_pattern)
+    # Find raw farmer registry XLSX files using the regex pattern
+    # This is safer than a simple glob, but we can use glob for simplicity
+    raw_files = glob.glob(os.path.join(FARMER_INPUT_DIR, 'RSBSA * Rice Farmers*.xlsx'))
 
     processed_count = 0
     failed_count = 0
     if not raw_files:
-        print(f"No raw farmer registry XLSX files matching pattern '{raw_files_pattern}' found.")
+        print(f"No 'RSBSA ... Rice Farmers*.xlsx' files found in '{FARMER_INPUT_DIR}'.")
     else:
         print(f"Found {len(raw_files)} XLSX file(s) to process.")
         
-        for i, input_file in enumerate(raw_files):
-            # Determine the write mode for *this specific file*
-            current_write_mode = selected_mode
+        # Determine the initial write mode
+        # 'overwrite' only applies to the *first* file.
+        # 'append' and 'dynamic_overwrite' apply to *all* files.
+        current_write_mode = selected_mode
 
-            # Special handling for 'overwrite': only first file overwrites, rest append
+        for i, input_file in enumerate(raw_files):
+            # If mode is 'overwrite', only the first file overwrites. Subsequent files must append.
             if selected_mode == 'overwrite' and i > 0:
                 current_write_mode = 'append'
-                print(f"File {i+1}: Switched to 'append' mode after initial overwrite.")
+                print(f"Switching to 'append' mode for subsequent files.")
 
-            # For 'append' or 'dynamic_overwrite', the mode is the same for all files
-            
             if process_farmer_xlsx_to_delta(input_file, write_mode=current_write_mode):
                 # Move successful XLSX file
                 try:
@@ -304,7 +257,7 @@ if __name__ == "__main__":
                     processed_count += 1
                 except Exception as move_err:
                      print(f"ERROR moving file {os.path.basename(input_file)} after successful processing: {move_err}")
-                     failed_count += 1
+                     failed_count += 1 # Count as failed if move fails
             else:
                  print(f"File {os.path.basename(input_file)} failed processing and was NOT moved.")
                  failed_count += 1
@@ -313,7 +266,4 @@ if __name__ == "__main__":
     if failed_count > 0:
         print(f"Failed to process or move {failed_count} file(s). Please check logs.")
     print("--- Farmer Registry Processing Complete ---")
-
-
-
 

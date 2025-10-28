@@ -12,6 +12,8 @@
     <script src="https://cdn.jsdelivr.net/npm/dayjs@1/dayjs.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/utc.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/customParseFormat.js"></script>
+    <!-- <<< ADDED: Dayjs plugin to get year/quarter >>> -->
+    <script src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/quarterOfYear.js"></script>
     <style>
         body {
             font-family: 'Inter', sans-serif;
@@ -45,6 +47,12 @@
             color: #9ca3af; /* gray-400 */
             font-style: italic;
         }
+        /* <<< ADDED: Style for disabled inputs >>> */
+        input:disabled, select:disabled {
+            background-color: #f3f4f6; /* gray-100 */
+            cursor: not-allowed;
+            opacity: 0.7;
+        }
     </style>
 </head>
 <body class="bg-gray-100 p-4 md:p-8">
@@ -53,6 +61,7 @@
         <h1 class="text-2xl font-bold text-center text-gray-800 mb-6">Disaster Impact Dashboard</h1>
 
         <!-- Filter Section -->
+        <!-- <<< MODIFIED: Grid layout to fit 8 items perfectly >>> -->
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6 p-4 border border-gray-200 rounded-lg bg-gray-50 items-end">
              <div>
                 <label for="provinceFilter" class="block text-sm font-medium text-gray-700 mb-1">Province</label>
@@ -66,15 +75,39 @@
                     <option value="">All Categories</option>
                 </select>
             </div>
-            <div class="grid grid-cols-2 gap-2">
-                 <div>
-                    <label for="startDateFilter" class="block text-sm font-medium text-gray-700 mb-1">Start Date</label>
-                    <input type="date" id="startDateFilter" name="start_date" class="mt-1 block w-full text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
-                </div>
-                 <div>
-                    <label for="endDateFilter" class="block text-sm font-medium text-gray-700 mb-1">End Date</label>
-                    <input type="date" id="endDateFilter" name="end_date" class="mt-1 block w-full text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
-                </div>
+            <!-- <<< ADDED: Municipality Filter (initially disabled) >>> -->
+            <div>
+                <label for="municipalityFilter" class="block text-sm font-medium text-gray-700 mb-1">Municipality</label>
+                <select id="municipalityFilter" name="municipality" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm bg-gray-200" disabled>
+                    <option value="">All (Select Province First)</option>
+                </select>
+            </div>
+            <!-- <<< ADDED: Quarter Filter >>> -->
+            <div>
+                <label for="quarterFilter" class="block text-sm font-medium text-gray-700 mb-1">Quarter</label>
+                <select id="quarterFilter" name="quarter" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
+                    <option value="">All Quarters</option>
+                    <option value="1">Q1 (Jan-Mar)</option>
+                    <option value="2">Q2 (Apr-Jun)</option>
+                    <option value="3">Q3 (Jul-Sep)</option>
+                    <option value="4">Q4 (Oct-Dec)</option>
+                </select>
+            </div>
+            <!-- <<< ADDED: Year Filter >>> -->
+             <div>
+                <label for="yearFilter" class="block text-sm font-medium text-gray-700 mb-1">Year</label>
+                <select id="yearFilter" name="year" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
+                    <option value="">All Years</option>
+                </select>
+            </div>
+             <!-- <<< MODIFIED: Removed wrapper div from dates >>> -->
+             <div>
+                <label for="startDateFilter" class="block text-sm font-medium text-gray-700 mb-1">Start Date</label>
+                <input type="date" id="startDateFilter" name="start_date" class="mt-1 block w-full text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
+            </div>
+             <div>
+                <label for="endDateFilter" class="block text-sm font-medium text-gray-700 mb-1">End Date</label>
+                <input type="date" id="endDateFilter" name="end_date" class="mt-1 block w-full text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
             </div>
             <div>
                 <button id="applyFiltersBtn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md shadow-sm transition duration-150 ease-in-out">
@@ -109,7 +142,16 @@
 
 
         <!-- Data Table -->
-        <h2 class="text-xl font-semibold text-gray-700 mb-4">Detailed Records (Max 100 shown)</h2>
+        <!-- <<< MODIFIED: Added flex container for title and search bar >>> -->
+        <div class="flex justify-between items-center mb-4">
+            <h2 class="text-xl font-semibold text-gray-700">Detailed Records (Max 100 shown)</h2>
+            <!-- <<< ADDED: Search Input >>> -->
+            <div>
+                <label for="tableSearch" class="sr-only">Search Table</label>
+                <input type="text" id="tableSearch" placeholder="Search table..." class="block w-full pl-3 pr-4 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
+            </div>
+        </div>
+
         <div class="overflow-x-auto shadow rounded-lg">
             <table id="dataTable" class="min-w-full bg-white border border-gray-200 hidden">
                 <thead class="bg-gray-100">
@@ -131,7 +173,7 @@
                     <!-- Data rows will be inserted here -->
                 </tbody>
             </table>
-             <div id="tableNote" class="text-xs text-gray-500 mt-2 px-1 hidden">* Farmer registry data only available for Aklan province.</div>
+             <div id="tableNote" class="text-xs text-gray-500 mt-2 px-1 hidden">* Farmer registry data (where available) is joined for calculation.</div>
         </div>
 
     </div>
@@ -140,6 +182,7 @@
         // --- Enable Dayjs plugins ---
         dayjs.extend(dayjs_plugin_utc);
         dayjs.extend(dayjs_plugin_customParseFormat);
+        dayjs.extend(dayjs_plugin_quarterOfYear); // <<< ADDED
 
         // --- Constants and Globals ---
         const baseApiUrl = 'http://localhost:8000/api/disaster_summary';
@@ -157,20 +200,26 @@
         let barChartInstance = null;
         let timeSeriesChartInstance = null;
         let categoryPieChartInstance = null;
+        let provinceMunicipalityMap = {}; // <<< ADDED: To store municipality data
 
         // Filter elements
         const provinceFilter = document.getElementById('provinceFilter');
         const categoryFilter = document.getElementById('categoryFilter');
+        const municipalityFilter = document.getElementById('municipalityFilter'); // <<< ADDED
+        const quarterFilter = document.getElementById('quarterFilter'); // <<< ADDED
+        const yearFilter = document.getElementById('yearFilter'); // <<< ADDED
         const startDateFilter = document.getElementById('startDateFilter');
         const endDateFilter = document.getElementById('endDateFilter');
         const applyFiltersBtn = document.getElementById('applyFiltersBtn');
+        const tableSearchInput = document.getElementById('tableSearch'); // <<< ADDED: Get search input
 
         // --- Helper: Format Numbers ---
         function formatNumber(value) {
             if (value >= 1e9) return (value / 1e9).toFixed(1) + ' B';
             if (value >= 1e6) return (value / 1e6).toFixed(1) + ' M';
             if (value >= 1e3) return (value / 1e3).toFixed(1) + ' K';
-            return !isNaN(parseFloat(value)) ? value : 0;
+            // <<< MODIFIED: Handle 0 or invalid numbers correctly >>>
+            return !isNaN(parseFloat(value)) ? parseFloat(value).toLocaleString() : '0';
         }
         function formatCurrency(value) {
             const numericValue = parseFloat(value);
@@ -197,7 +246,7 @@
                  return '<span class="na-value">N/A</span>';
              }
              // Format area with decimals, farmers as integers
-             return value === parseInt(value, 10) ? formatInt(value) : numericValue.toFixed(2);
+             return value === parseInt(value, 10) ? formatInt(value) : parseFloat(value).toFixed(2).toLocaleString();
         }
         // <<< ADDED: Helper to display text or N/A >>>
         function formatText(value) {
@@ -217,16 +266,54 @@
                 const result = await response.json();
                 if (result.status === 'success' && result.data) {
                     const allData = result.data;
-                    // Get unique, non-null/empty provinces and categories, then sort
-                    const provinces = [...new Set(allData.map(item => item.province).filter(p => p && p !== 'Unknown'))].sort();
-                    const categories = [...new Set(allData.map(item => item.disaster_category).filter(c => c && c !== 'Unknown'))].sort();
+                    
+                    const provincesSet = new Set();
+                    const categoriesSet = new Set();
+                    const yearsSet = new Set(); // <<< ADDED
+                    provinceMunicipalityMap = {}; // Reset map
+
+                    allData.forEach(item => {
+                        const province = item.province;
+                        const municipality = item.municipality;
+                        const category = item.disaster_category;
+
+                        if (province && province !== 'Unknown') {
+                            provincesSet.add(province);
+                            
+                            if (municipality && municipality !== 'Unknown') {
+                                if (!provinceMunicipalityMap[province]) {
+                                    provinceMunicipalityMap[province] = new Set();
+                                }
+                                provinceMunicipalityMap[province].add(municipality);
+                            }
+                        }
+                        if (category && category !== 'Unknown') {
+                            categoriesSet.add(category);
+                        }
+                        // <<< ADDED: Populate years >>>
+                        if (item.event_date_start && dayjs(item.event_date_start).isValid()) {
+                            yearsSet.add(dayjs(item.event_date_start).year());
+                        }
+                    });
+
+                    // Sort sets
+                    const provinces = [...provincesSet].sort();
+                    const categories = [...categoriesSet].sort();
+                    const years = [...yearsSet].sort((a, b) => b - a); // <<< ADDED: Sort years descending
+                    // Convert map sets to sorted arrays
+                    for (const prov in provinceMunicipalityMap) {
+                        provinceMunicipalityMap[prov] = [...provinceMunicipalityMap[prov]].sort();
+                    }
+
 
                     // Clear existing options except the first "All" option
                     while (provinceFilter.options.length > 1) provinceFilter.remove(1);
                     while (categoryFilter.options.length > 1) categoryFilter.remove(1);
+                    while (yearFilter.options.length > 1) yearFilter.remove(1); // <<< ADDED
 
                     provinces.forEach(p => provinceFilter.add(new Option(p, p)));
                     categories.forEach(c => categoryFilter.add(new Option(c, c)));
+                    years.forEach(y => yearFilter.add(new Option(y, y))); // <<< ADDED
                     console.log("Filters populated.");
                 } else {
                      console.error("Could not fetch data to populate filters:", result.message || "Unknown error");
@@ -238,6 +325,71 @@
             }
         }
 
+        // --- <<< ADDED: Function to Update Municipality Filter >>> ---
+        function updateMunicipalityFilter() {
+            const selectedProvince = provinceFilter.value;
+            // Clear existing municipality options
+            while (municipalityFilter.options.length > 1) municipalityFilter.remove(1);
+            
+            if (selectedProvince && provinceMunicipalityMap[selectedProvince]) {
+                // Enable filter and populate
+                municipalityFilter.disabled = false;
+                municipalityFilter.classList.remove('bg-gray-200');
+                municipalityFilter.options[0].text = "All Municipalities"; // Change prompt text
+                
+                provinceMunicipalityMap[selectedProvince].forEach(mun => {
+                    municipalityFilter.add(new Option(mun, mun));
+                });
+            } else {
+                // Disable filter
+                municipalityFilter.disabled = true;
+                municipalityFilter.classList.add('bg-gray-200');
+                municipalityFilter.options[0].text = "All (Select Province First)"; // Reset prompt text
+            }
+        }
+        // <<< ADDED: Event listener for province filter change >>>
+        provinceFilter.addEventListener('change', updateMunicipalityFilter);
+
+
+        // --- <<< ADDED: Function to handle mutually exclusive time filters >>> ---
+        function handleTimeFilterChange(source) {
+            const quarter = quarterFilter.value;
+            const year = yearFilter.value;
+            const start = startDateFilter.value;
+            const end = endDateFilter.value;
+
+            if (source === 'quarterYear') {
+                // If user is using Quarter or Year, disable and clear Start/End
+                if (quarter || year) {
+                    startDateFilter.value = '';
+                    endDateFilter.value = '';
+                    startDateFilter.disabled = true;
+                    endDateFilter.disabled = true;
+                } else {
+                    // If they cleared both, re-enable Start/End
+                    startDateFilter.disabled = false;
+                    endDateFilter.disabled = false;
+                }
+            } else if (source === 'dateRange') {
+                // If user is using Start or End, disable and clear Quarter/Year
+                if (start || end) {
+                    quarterFilter.value = '';
+                    yearFilter.value = '';
+                    quarterFilter.disabled = true;
+                    yearFilter.disabled = true;
+                } else {
+                    // If they cleared both, re-enable Quarter/Year
+                    quarterFilter.disabled = false;
+                    yearFilter.disabled = false;
+                }
+            }
+        }
+        // <<< ADDED: Event listeners for time filters >>>
+        quarterFilter.addEventListener('change', () => handleTimeFilterChange('quarterYear'));
+        yearFilter.addEventListener('change', () => handleTimeFilterChange('quarterYear'));
+        startDateFilter.addEventListener('input', () => handleTimeFilterChange('dateRange'));
+        endDateFilter.addEventListener('input', () => handleTimeFilterChange('dateRange'));
+
 
         // --- Fetch Data Based on Filters and Display ---
         async function fetchDataAndDisplay() {
@@ -247,6 +399,8 @@
             dataTable.classList.add('hidden');
             dataTableBody.innerHTML = '';
             tableNote.classList.add('hidden'); // <<< Hide table note initially
+            tableSearchInput.value = ''; // <<< ADDED: Clear search input on new fetch
+
             // Destroy existing charts
             if (barChartInstance) barChartInstance.destroy();
             if (timeSeriesChartInstance) timeSeriesChartInstance.destroy();
@@ -256,11 +410,17 @@
             const params = new URLSearchParams();
             const province = provinceFilter.value;
             const category = categoryFilter.value;
+            const municipality = municipalityFilter.value; // <<< ADDED
+            const quarter = quarterFilter.value; // <<< ADDED
+            const year = yearFilter.value; // <<< ADDED
             const startDate = startDateFilter.value;
             const endDate = endDateFilter.value;
 
             if (province) params.append('province', province);
             if (category) params.append('disaster_category', category);
+            if (municipality) params.append('municipality', municipality); // <<< ADDED
+            if (quarter) params.append('quarter', quarter); // <<< ADDED
+            if (year) params.append('year', year); // <<< ADDED
             if (startDate) params.append('start_date', startDate);
             if (endDate) params.append('end_date', endDate);
             params.append('limit', 5000); // Fetch more data for better chart aggregation
@@ -284,9 +444,11 @@
                     // --- 1. Prepare Data for Bar Chart ---
                     let barGroupByKey = 'province';
                     let barChartTitle = 'Total Disaster Losses PHP Grand Total by Province';
-                    if (province && !category) { barGroupByKey = 'disaster_category'; barChartTitle = `Losses by Disaster Category in ${province}`; }
-                    else if (province && category) { barGroupByKey = 'municipality'; barChartTitle = `Losses by Municipality in ${province} (${category})`; }
+                    if (province && !municipality) { barGroupByKey = 'municipality'; barChartTitle = `Losses by Municipality in ${province}`; }
+                    else if (province && municipality) { barGroupByKey = 'disaster_category'; barChartTitle = `Losses by Category in ${municipality}`; }
                     else if (!province && category) { barGroupByKey = 'province'; barChartTitle = `Losses from ${category} by Province`; }
+                    else if (province && category) { barGroupByKey = 'municipality'; barChartTitle = `Losses from ${category} in ${province}`; }
+
 
                     const lossesByBarGroup = data.reduce((acc, item) => {
                         const key = item[barGroupByKey] || 'Unknown';
@@ -373,7 +535,12 @@
                         });
                     } else {
                          // Optionally display a message if no time data
-                         timeSeriesCanvas.getContext('2d').fillText('No monthly data to display.', 10, 50);
+                         const lineCtx = timeSeriesCanvas.getContext('2d');
+                         lineCtx.clearRect(0, 0, timeSeriesCanvas.width, timeSeriesCanvas.height);
+                         lineCtx.font = '16px "Inter"';
+                         lineCtx.fillStyle = '#6b7280';
+                         lineCtx.textAlign = 'center';
+                         lineCtx.fillText('No monthly data to display.', timeSeriesCanvas.width / 2, timeSeriesCanvas.height / 2);
                     }
 
 
@@ -387,7 +554,12 @@
                              options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'top' }, title: { display: false }, tooltip: { callbacks: { label: ctx => `${ctx.label}: ${formatCurrency(ctx.parsed)}` } } } }
                         });
                     } else {
-                         categoryPieCanvas.getContext('2d').fillText('No category data to display.', 10, 50);
+                         const pieCtx = categoryPieCanvas.getContext('2d');
+                         pieCtx.clearRect(0, 0, categoryPieCanvas.width, categoryPieCanvas.height);
+                         pieCtx.font = '16px "Inter"';
+                         pieCtx.fillStyle = '#6b7280';
+                         pieCtx.textAlign = 'center';
+                         pieCtx.fillText('No category data to display.', categoryPieCanvas.width / 2, categoryPieCanvas.height / 2);
                     }
 
 
@@ -406,7 +578,7 @@
                         row.innerHTML = `
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700">${formatText(item.event_date_start)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700">${formatText(item.province)}</td>
-                            <td class="px-4 py-2 whitespace-nowrap text-gray-700">${formatText(item.municipality)}</td>
+                            <td class="px-4 py-2 whitespace-nowTIErap text-gray-700">${formatText(item.municipality)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700">${formatText(item.commodity)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700">${formatText(item.disaster_category)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatCurrency(item.losses_php_grand_total)}</td>
@@ -445,6 +617,26 @@
 
         // --- Event Listener for Filter Button ---
         applyFiltersBtn.addEventListener('click', fetchDataAndDisplay);
+
+        // --- <<< ADDED: Event Listener and Function for Table Search >>> ---
+        function filterTable() {
+            const searchTerm = tableSearchInput.value.toLowerCase();
+            const rows = dataTableBody.getElementsByTagName('tr');
+
+            for (let i = 0; i < rows.length; i++) {
+                const row = rows[i];
+                // Use textContent for a broad search across all row text
+                const rowText = row.textContent || row.innerText;
+
+                if (rowText.toLowerCase().indexOf(searchTerm) > -1) {
+                    row.style.display = ""; // Show row
+                } else {
+                    row.style.display = "none"; // Hide row
+                }
+            }
+        }
+        tableSearchInput.addEventListener('keyup', filterTable);
+
 
         // --- Initial Load ---
         async function initializeDashboard() {

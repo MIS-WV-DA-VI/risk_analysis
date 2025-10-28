@@ -37,6 +37,8 @@ def query_lakehouse(
     start_date: Optional[datetime.date] = None,
     end_date: Optional[datetime.date] = None,
     disaster_category: Optional[str] = None,
+    quarter: Optional[int] = None, # <<< ADDED: Quarter filter
+    year: Optional[int] = None, # <<< ADDED: Year filter
     limit: int = 1000
     ):
     con = None
@@ -91,14 +93,17 @@ def query_lakehouse(
         where_clauses = []
         params = {}
         if province:
-            where_clauses.append("d.province ILIKE $province")
-            params['province'] = f"%{province}%"
+            # Use UPPER() for precise, case-insensitive matching (like in import)
+            where_clauses.append("UPPER(d.province) = UPPER($province)")
+            params['province'] = province
         if municipality:
-            where_clauses.append("d.municipality ILIKE $municipality")
-            params['municipality'] = f"%{municipality}%"
+            # Use UPPER() for precise, case-insensitive matching
+            where_clauses.append("UPPER(d.municipality) = UPPER($municipality)")
+            params['municipality'] = municipality
         if disaster_category:
-            where_clauses.append("d.disaster_category ILIKE $disaster_category")
-            params['disaster_category'] = f"%{disaster_category}%"
+            # Use UPPER() for precise, case-insensitive matching
+            where_clauses.append("UPPER(d.disaster_category) = UPPER($disaster_category)")
+            params['disaster_category'] = disaster_category
         if start_date:
             where_clauses.append("d.event_date_start >= $start_date")
             params['start_date'] = start_date
@@ -106,6 +111,16 @@ def query_lakehouse(
             # Use event_date_start for range check for simplicity
             where_clauses.append("d.event_date_start <= $end_date")
             params['end_date'] = end_date
+        
+        # <<< ADDED: Quarter filter logic >>>
+        if quarter:
+            where_clauses.append("quarter(d.event_date_start) = $quarter")
+            params['quarter'] = quarter
+            
+        # <<< ADDED: Year filter logic >>>
+        if year:
+            where_clauses.append("year(d.event_date_start) = $year")
+            params['year'] = year
 
         where_sql = ""
         if where_clauses:
@@ -122,8 +137,23 @@ def query_lakehouse(
             NULL AS total_declared_rice_area_ha,
             NULL AS percentage_farmers_affected
         """
-
+        
+        # --- <<< ADDED: Pre-aggregate Farmer Data for Join >>> ---
+        # This is more robust as it groups by both province and municipality
+        farmer_join_view = ""
         if farmer_registry_exists:
+            con.sql(f"""
+                CREATE OR REPLACE TEMPORARY VIEW farmer_summary AS
+                SELECT
+                    province,
+                    municipality,
+                    SUM(registered_rice_farmers) AS registered_rice_farmers,
+                    SUM(total_declared_rice_area_ha) AS total_declared_rice_area_ha
+                FROM {delta_read_function}('{safe_farmer_registry_path}')
+                GROUP BY province, municipality;
+            """)
+            farmer_join_view = "farmer_summary" # Use the view for the join
+
             # Columns to select if join is successful
             select_farmer_cols = """,
                 fr.registered_rice_farmers,
@@ -138,8 +168,8 @@ def query_lakehouse(
             """
             # The join clause itself
             join_sql = f"""
-            LEFT JOIN {delta_read_function}('{safe_farmer_registry_path}') AS fr
-              ON d.province = fr.province AND d.municipality = fr.municipality
+            LEFT JOIN {farmer_join_view} AS fr
+              ON UPPER(d.province) = UPPER(fr.province) AND UPPER(d.municipality) = UPPER(fr.municipality)
             """
             # Use the specific select columns if joining
             default_farmer_select = "" # Clear default if join happens
@@ -152,7 +182,7 @@ def query_lakehouse(
             {delta_read_function}('{safe_lakehouse_path}') AS d -- Alias main table as 'd'
         {join_sql} -- Add the join clause if applicable
         {where_sql} -- Apply filters using alias 'd'
-        ORDER BY d.event_date_start DESC NULLS LAST -- Use alias 'd'
+        ORDER BY d.losses_php_grand_total DESC NULLS LAST -- Changed sort to losses
         LIMIT $limit
         """
         params['limit'] = limit if limit > 0 else 1000
@@ -181,7 +211,7 @@ def query_lakehouse(
 
         # --- <<< FIX: Robust Integer Conversion >>> ---
         # Convert columns intended to be integers
-        int_cols = ['year', 'farmers_affected', 'registered_rice_farmers', 'source_row_number']
+        int_cols = ['year', 'farmers_affected', 'registered_rice_farmers'] # 'source_row_number' removed as it's not always present
         for col in int_cols:
              if col in results.columns:
                  # 1. Convert to numeric, coercing errors to NaN
@@ -229,9 +259,11 @@ def root():
 
 @app.get("/api/disaster_summary")
 def get_disaster_summary(
-    province: Optional[str] = Query(None, description="Filter by province (case-insensitive, partial match)"),
-    municipality: Optional[str] = Query(None, description="Filter by municipality (case-insensitive, partial match)"),
-    disaster_category: Optional[str] = Query(None, description="Filter by disaster category (case-insensitive, partial match)"),
+    province: Optional[str] = Query(None, description="Filter by province (case-insensitive, exact match)"),
+    municipality: Optional[str] = Query(None, description="Filter by municipality (case-insensitive, exact match)"),
+    disaster_category: Optional[str] = Query(None, description="Filter by disaster category (case-insensitive, exact match)"),
+    quarter: Optional[int] = Query(None, description="Filter by quarter (1-4)", ge=1, le=4), # <<< ADDED
+    year: Optional[int] = Query(None, description="Filter by year (e.g., 2023)", ge=1900, le=2100), # <<< ADDED
     start_date: Optional[datetime.date] = Query(None, description="Filter by start date (YYYY-MM-DD) - inclusive"),
     end_date: Optional[datetime.date] = Query(None, description="Filter by end date (YYYY-MM-DD) - inclusive"),
     limit: int = Query(100, description="Maximum number of records to return", gt=0, le=5000)
@@ -243,6 +275,8 @@ def get_disaster_summary(
             start_date=start_date,
             end_date=end_date,
             disaster_category=disaster_category,
+            quarter=quarter, # <<< ADDED
+            year=year, # <<< ADDED
             limit=limit
         )
         return {"status": "success", "count": len(data), "data": data}

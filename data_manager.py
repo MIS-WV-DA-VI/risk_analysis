@@ -7,7 +7,7 @@ import glob
 import shutil
 import numpy as np
 import json # Needed for handling GeoJSON output structure
-from datetime import datetime # Import datetime for type checking
+from datetime import datetime, date # Import datetime and date for type checking
 
 # --- Configuration ---\
 BASE_DIR = '.'
@@ -28,8 +28,7 @@ GEOJSON_PSGC_PROP = 'adm3_psgc'     # Property name for Municipality PSGC code (
 # --- <<< Adjust these based on your sanitized disaster data columns >>> ---
 DISASTER_MUN_COL = 'municipality' # Column name for Municipality in Delta table
 DISASTER_PROV_COL = 'province'    # Column name for Province in Delta table
-DISASTER_PSGC_COL = 'psgc_code'   # UNCOMMENT and add to sanitizer.py if you implement Municipality PSGC mapping
-
+DISASTER_PSGC_COL = 'psgc_code'   # Ensure this is uncommented if sanitizer adds it
 
 def handle_import(mode_override: str = None):
     """
@@ -89,8 +88,16 @@ def handle_import(mode_override: str = None):
             if DISASTER_PROV_COL in df.columns:
                  df[DISASTER_PROV_COL] = df[DISASTER_PROV_COL].astype(str).str.upper().str.strip()
             # If using PSGC, ensure it's loaded as string
-            if DISASTER_PSGC_COL in df.columns:
-                df[DISASTER_PSGC_COL] = df[DISASTER_PSGC_COL].astype(str).str.strip()
+            # Check if DISASTER_PSGC_COL exists as a variable AND if that column name should exist based on config
+            psgc_col_name = None
+            psgc_col_exists_in_df = False
+            try:
+                psgc_col_name = DISASTER_PSGC_COL
+                if isinstance(psgc_col_name, str) and psgc_col_name in df.columns:
+                    df[psgc_col_name] = df[psgc_col_name].astype(str).str.strip()
+                    psgc_col_exists_in_df = True
+            except NameError:
+                pass # DISASTER_PSGC_COL is commented out or not defined
 
 
             if 'event_date_start' in df.columns:
@@ -99,17 +106,8 @@ def handle_import(mode_override: str = None):
                 df['event_date_end'] = pd.to_datetime(df['event_date_end'], errors='coerce').dt.date
 
             required_cols = ['year', 'event_date_start', 'province', 'municipality', 'losses_php_grand_total']
-            # Add PSGC to required if using it for join
-            # Check if DISASTER_PSGC_COL exists as a variable AND if that column name should exist based on config
-            # This logic assumes DISASTER_PSGC_COL might be commented out
-            psgc_col_name = None
-            try:
-                psgc_col_name = DISASTER_PSGC_COL
-                # Check if it's uncommented by checking if it's assigned a string value
-                if isinstance(psgc_col_name, str):
-                    required_cols.append(psgc_col_name)
-            except NameError:
-                pass # DISASTER_PSGC_COL is commented out or not defined
+            if psgc_col_exists_in_df: # Add PSGC to required only if it exists
+                required_cols.append(psgc_col_name)
 
             if not all(col in df.columns for col in required_cols):
                  missing = [col for col in required_cols if col not in df.columns]
@@ -118,11 +116,33 @@ def handle_import(mode_override: str = None):
                  continue
 
             print(f"Writing {len(df)} rows to Delta table in '{current_write_mode}' mode...")
-            write_deltalake(
-                lakehouse_abs_path, # Use absolute path
-                df,
-                mode=current_write_mode,
-            )
+            # Decide on schema_mode dynamically based on write_mode
+            schema_mode_param = "overwrite" if current_write_mode == 'overwrite' else "merge" #"none" # Use "merge" for append? or handle mismatch
+            try:
+                 write_deltalake(
+                     lakehouse_abs_path,
+                     df,
+                     mode=current_write_mode,
+                     # schema_mode="overwrite" # Keep schema fixed after initial overwrite
+                 )
+            except Exception as write_err:
+                 # Catch potential schema mismatch on append
+                 if "Schema mismatch detected" in str(write_err) or "number of fields does not match" in str(write_err):
+                      print("\nSCHEMA MISMATCH DETECTED:")
+                      print(f"Error: {write_err}")
+                      print("The schema of the CSV file being imported does not match the existing Delta table.")
+                      print("This usually happens if columns were added/removed/renamed in sanitizer.py after the table was first created.")
+                      print("\nOPTIONS:")
+                      print("1. Re-run the import with '--mode overwrite' to replace the table (DELETES EXISTING DATA):")
+                      print("   python data_manager.py import --mode overwrite")
+                      print("2. (Advanced) Manually ALTER the Delta table schema or add 'schema_mode=\"merge\"'/'schema_mode=\"overwrite\"' to write_deltalake call (see Delta Lake docs).")
+                      print("Skipping this file due to schema mismatch.")
+                      failed_count += 1
+                      continue # Skip to next file
+                 else:
+                      raise # Re-raise other unexpected write errors
+
+
             print("Write successful.")
 
             try:
@@ -164,11 +184,11 @@ def df_to_geojson(df, geometry_col='geometry_geojson'):
     features = []
     # Adjust required columns based on whether PSGC is expected
     base_required = ['municipality_name', 'province_name', geometry_col]
-    psgc_col_name = None
+    psgc_code_alias = 'psgc_code' # Alias used in the SQL query
     try:
-        psgc_col_name = GEOJSON_PSGC_PROP # Check if this constant exists
-        if isinstance(psgc_col_name, str):
-            base_required.append('psgc_code') # Add psgc_code alias used in query
+        # Check if DISASTER_PSGC_COL constant suggests we should expect psgc_code
+        if isinstance(DISASTER_PSGC_COL, str):
+            base_required.append(psgc_code_alias)
     except NameError:
         pass # PSGC not configured
 
@@ -201,7 +221,7 @@ def df_to_geojson(df, geometry_col='geometry_geojson'):
             elif isinstance(v, (np.float64, np.float32)):
                  if np.isnan(v) or np.isinf(v): cleaned_properties[k] = None
                  else: cleaned_properties[k] = float(v)
-            elif isinstance(v, (datetime, pd.Timestamp, datetime.date)):
+            elif isinstance(v, (datetime, pd.Timestamp, date)): # <-- FIXED THIS LINE
                  cleaned_properties[k] = v.isoformat()
             else:
                  cleaned_properties[k] = v
@@ -246,24 +266,83 @@ def handle_export():
         if not os.path.exists(boundaries_abs_path):
              print(f"ERROR: Boundaries GeoJSON file not found at {boundaries_abs_path}")
              return
+        
+        # --- [FIXED BLOCK] ---
+        # This block is updated to remove 'properties->>' and handle 'geom' vs 'geometry'
         try:
-            # Load Municipality data directly
-            con.sql(f"""
-                CREATE OR REPLACE TABLE municipal_boundaries AS
-                SELECT
-                    ST_GeomFromWKB(geometry) AS geom,
-                    properties->>'{GEOJSON_MUN_PROP}' AS municipality_name,
-                    properties->>'{GEOJSON_PROV_PROP}' AS province_name,
-                    properties->>'{GEOJSON_PSGC_PROP}' AS psgc_code -- Municipality PSGC
-                FROM ST_Read('{boundaries_abs_path}');
-            """)
+            # Load Municipality data. ST_Read flattens GeoJSON properties into top-level columns.
+            # We also need to find the geometry column. The original error suggested 'geom'
+            # might be the name, or it could be 'geometry'.
+            print(f"Attempting to load boundaries from '{boundaries_abs_path}'...")
+            print(f"Using properties: MUN='{GEOJSON_MUN_PROP}', PROV='{GEOJSON_PROV_PROP}', PSGC='{GEOJSON_PSGC_PROP}'")
+
+            # First, let's try to find the geometry column name ('geom' or 'geometry')
+            # and create the table in one go.
+            try:
+                # Attempt 1: Assume geometry column is 'geom' and select properties directly
+                con.sql(f"""
+                    CREATE OR REPLACE TABLE municipal_boundaries AS
+                    SELECT
+                        geom, -- Assume geometry column is 'geom'
+                        "{GEOJSON_MUN_PROP}" AS municipality_name,
+                        "{GEOJSON_PROV_PROP}" AS province_name,
+                        "{GEOJSON_PSGC_PROP}" AS psgc_code -- Municipality PSGC
+                    FROM ST_Read('{boundaries_abs_path}');
+                """)
+                print("Successfully loaded boundaries assuming 'geom' column.")
+            except duckdb.BinderException as be_geom:
+                # This error means a configured property name (e.g., 'adm3_en') was not found
+                if f'column "{GEOJSON_MUN_PROP}" does not exist' in str(be_geom) or \
+                   f'column "{GEOJSON_PROV_PROP}" does not exist' in str(be_geom) or \
+                   f'column "{GEOJSON_PSGC_PROP}" does not exist' in str(be_geom):
+                    print(f"ERROR: A configured GeoJSON property column was not found: {be_geom}")
+                    print("Please check your GEOJSON_*_PROP settings in the script against the GeoJSON file.")
+                    raise # Re-raise this critical error
+                
+                # This error means 'geom' wasn't the geometry column, so we try 'geometry'
+                elif 'column "geom" does not exist' in str(be_geom):
+                    print("Column 'geom' not found. Retrying with 'geometry' as the geometry column...")
+                    con.sql(f"""
+                        CREATE OR REPLACE TABLE municipal_boundaries AS
+                        SELECT
+                            geometry AS geom, -- Assume geometry column is 'geometry' and alias it
+                            "{GEOJSON_MUN_PROP}" AS municipality_name,
+                            "{GEOJSON_PROV_PROP}" AS province_name,
+                            "{GEOJSON_PSGC_PROP}" AS psgc_code -- Municipality PSGC
+                        FROM ST_Read('{boundaries_abs_path}');
+                    """)
+                    print("Successfully loaded boundaries assuming 'geometry' column and aliasing to 'geom'.")
+                else:
+                    # Another binder error
+                    print(f"An unexpected BinderException occurred: {be_geom}")
+                    raise be_geom # Re-raise the error
+
             # Index on municipality identifiers
             con.sql("CREATE INDEX IF NOT EXISTS mun_bound_psgc_idx ON municipal_boundaries (psgc_code);")
             con.sql("CREATE INDEX IF NOT EXISTS mun_bound_name_idx ON municipal_boundaries (UPPER(province_name), UPPER(municipality_name));")
             print(f"Loaded and indexed boundaries from '{os.path.basename(BOUNDARIES_GEOJSON)}'.")
+
+        except duckdb.BinderException as be:
+             # This outer catch block will catch errors from the inner logic
+             print("\n--- DETAILED BINDER ERROR ---")
+             print(f"Failed to load GeoJSON: {be}")
+             print("\nThis error usually means one of two things:")
+             print(f"1. The geometry column in your GeoJSON is not named 'geom' or 'geometry'.")
+             print(f"2. A property column name in your script configuration is wrong:")
+             print(f"   - Municipality Property: '{GEOJSON_MUN_PROP}'")
+             print(f"   - Province Property:     '{GEOJSON_PROV_PROP}'")
+             print(f"   - PSGC Property:         '{GEOJSON_PSGC_PROP}'")
+             print("\nTo fix, please:")
+             print(f"1. Open the file: {boundaries_abs_path}")
+             print(f"2. Check the *exact* spelling and case of the property names (e.g., 'adm3_en', 'adm2_en').")
+             print(f"3. Update the GEOJSON..._PROP constants at the top of the script to match.")
+             print("---------------------------------\n")
+             import traceback; traceback.print_exc(); return
         except Exception as e:
             print(f"ERROR loading or indexing GeoJSON: {e}")
             import traceback; traceback.print_exc(); return
+        # --- [END FIXED BLOCK] ---
+
 
         # --- Read Main Disaster Data from Delta Lake ---
         print("Reading main disaster data from Delta Lake...")
@@ -311,7 +390,7 @@ def handle_export():
             SUM(md.losses_php_grand_total) AS total_loss_php,
             COUNT(*) AS incident_count,
             -- Add other aggregations: SUM(md.farmers_affected), AVG(md.area_total_affected_ha), etc.
-            ST_AsGeoJSON(mb.geom) AS geometry_geojson -- Export geometry directly
+            ST_AsGeoJSON(mb.geom) AS geometry_geojson -- Use 'geom' here
         FROM main_disasters_df md
         JOIN municipal_boundaries mb -- Join directly with municipal boundaries
           ON {join_condition}
@@ -321,7 +400,7 @@ def handle_export():
             mb.province_name,
             mb.municipality_name,
             mb.psgc_code,
-            mb.geom -- Group by the municipality geometry
+            mb.geom -- Group by the municipality geometry using 'geom'
         ORDER BY
             mb.province_name,
             mb.municipality_name;

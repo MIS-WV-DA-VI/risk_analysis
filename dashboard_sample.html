@@ -23,8 +23,9 @@
             margin: auto;
             height: 50vh; /* Main chart height */
             width: 90%;
-            max-width: 800px;
+            /* max-width: 800px; */ /* Removed max-width */
         }
+        /* MODIFIED: Removed fixed height */
         .small-chart-container {
              position: relative;
              margin: auto;
@@ -57,7 +58,8 @@
 </head>
 <body class="bg-gray-100 p-4 md:p-8">
 
-    <div class="max-w-7xl mx-auto bg-white rounded-lg shadow-md p-6">
+    <!-- MODIFIED: Removed 'max-w-7xl' to allow full width on large screens -->
+    <div class="mx-auto bg-white rounded-lg shadow-md p-6">
         <!-- MODIFIED: Header with Title and Home Button -->
         <div class="flex justify-between items-center mb-6">
             <h1 class="text-2xl font-bold text-gray-800">Disaster Impact Dashboard</h1>
@@ -135,12 +137,12 @@
         <!-- Row for Additional Charts -->
         <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-12">
             <!-- Line Chart Container -->
-            <div class="small-chart-container bg-gray-50 p-4 rounded-lg shadow-sm border border-gray-200">
+            <div class="small-chart-container bg-gray-50 p-4 pb-6 rounded-lg shadow-sm border border-gray-200">
                  <h2 class="text-lg font-semibold text-center text-gray-700 mb-3">Losses Over Time (Monthly)</h2>
                 <canvas id="timeSeriesChart"></canvas>
             </div>
              <!-- Pie Chart Container -->
-            <div class="small-chart-container bg-gray-50 p-4 rounded-lg shadow-sm border border-gray-200">
+            <div class="small-chart-container bg-gray-50 p-4 pb-6 rounded-lg shadow-sm border border-gray-200">
                  <h2 class="text-lg font-semibold text-center text-gray-700 mb-3">Loss Distribution by Category</h2>
                 <canvas id="categoryPieChart"></canvas>
             </div>
@@ -192,12 +194,7 @@
 
         // --- Constants and Globals ---
         // <<< IMPORTANT: Update this URL to point to your live API >>>
-        // This example assumes your portal and API are on the same server
-        // and the reverse proxy is set up.
-        // If your Apache is listening on 8445, you'd use:
         const baseApiUrl = 'https://27.110.161.135:8445/api/disaster_summary'; // Use the specific IP and port
-        // Or if you are running locally for presentation:
-        // const baseApiUrl = 'http://127.0.0.1:8002/api/disaster_summary';
 
         const loadingDiv = document.getElementById('loading');
         const errorDiv = document.getElementById('error');
@@ -274,6 +271,7 @@
             console.log("Populating filters...");
             try {
                 // Fetch unfiltered data to get all possible provinces/categories
+                // <<< MODIFIED: Simple fetch without auth headers >>>
                 const response = await fetch(`${baseApiUrl}?limit=5000`);
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
                 const result = await response.json();
@@ -442,6 +440,7 @@
             console.log("Fetching data from:", filteredApiUrl);
 
             try {
+                // <<< MODIFIED: Simple fetch without auth headers >>>
                 const response = await fetch(filteredApiUrl);
                 if (!response.ok) {
                     let errorMsg = `HTTP error! status: ${response.status}`;
@@ -564,7 +563,16 @@
                         categoryPieChartInstance = new Chart(pieCtx, {
                              type: 'pie',
                              data: { labels: categoryLabels, datasets: [{ label: 'Losses by Category (PHP)', data: categoryLossValues, backgroundColor: pieColors.slice(0, categoryLabels.length), hoverOffset: 4 }] },
-                             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'top' }, title: { display: false }, tooltip: { callbacks: { label: ctx => `${ctx.label}: ${formatCurrency(ctx.parsed)}` } } } }
+                             options: { responsive: true, maintainAspectRatio: false, plugins: { 
+                                 legend: { 
+                                     position: 'bottom', // MODIFIED: Moved legend to bottom
+                                     labels: {
+                                         padding: 15 // Add some padding
+                                     }
+                                 }, 
+                                 title: { display: false }, 
+                                 tooltip: { callbacks: { label: ctx => `${ctx.label}: ${formatCurrency(ctx.parsed)}` } } 
+                             } }
                         });
                     } else {
                          const pieCtx = categoryPieCanvas.getContext('2d');
@@ -612,7 +620,7 @@
 
                     loadingDiv.style.display = 'none';
 
-                } else if (result.status === 'success' && (!result.data || result.data.length === 0)) {
+                } else if (result.status === 'success' && (!result.Data || result.data.length === 0)) {
                     loadingDiv.style.display = 'none';
                     noDataDiv.classList.remove('hidden');
                     console.log("API returned success but no data for selected filters.");

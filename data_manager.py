@@ -1,21 +1,34 @@
 import argparse
 import pandas as pd
 import duckdb
-from deltalake import write_deltalake
+from deltalake import write_deltalake, DeltaTable # Import DeltaTable
 import os
-import glob # Need glob to find files
-import shutil # Need shutil to move files
-import numpy as np # For NaN/Inf replacement
+import glob
+import shutil
+import numpy as np
+import json # Needed for handling GeoJSON output structure
+from datetime import datetime # Import datetime for type checking
 
-# --- Configuration ---
-# Using relative paths for local execution
-BASE_DIR = '.' # Current directory
+# --- Configuration ---\
+BASE_DIR = '.'
 RAW_DATA_DIR = os.path.join(BASE_DIR, 'raw_data')
 PROCESSED_DATA_DIR = os.path.join(RAW_DATA_DIR, 'processed')
-LAKEHOUSE_PATH = os.path.join(BASE_DIR, 'lakehouse_data/lakehouse_disasters') # Main clean data table
-FARMER_LAKEHOUSE_PATH = os.path.join(BASE_DIR, 'lakehouse_data/farmer_registry') # Path to the farmer table
-API_OUTPUT_FILE = os.path.join(BASE_DIR, 'api_output/api_data.json')
-DUCKDB_FILE = os.path.join(BASE_DIR, 'lakehouse_data/analysis_db.duckdb')
+LAKEHOUSE_PATH = os.path.join(BASE_DIR, 'lakehouse_data/lakehouse_disasters')
+FARMER_LAKEHOUSE_PATH = os.path.join(BASE_DIR, 'lakehouse_data/farmer_registry')
+API_OUTPUT_FILE = os.path.join(BASE_DIR, 'api_output/api_data.json') # Will now store GeoJSON
+DUCKDB_FILE = os.path.join(BASE_DIR, 'lakehouse_data/analysis_db.duckdb') # Using a file is better for persistence if needed
+
+# --- GIS Configuration ---
+GIS_DATA_DIR = os.path.join(BASE_DIR, 'gis_data')
+BOUNDARIES_GEOJSON = os.path.join(GIS_DATA_DIR, 'WV_Municipalities.geojson') # Reverted to Municipalities file
+# --- <<< IMPORTANT: Adjust these property names based on your WV_Municipalities.geojson file >>> ---
+GEOJSON_MUN_PROP = 'adm3_en'        # Property name for Municipality name
+GEOJSON_PROV_PROP = 'adm2_en'       # Property name for Province name
+GEOJSON_PSGC_PROP = 'adm3_psgc'     # Property name for Municipality PSGC code (IDEAL JOIN KEY)
+# --- <<< Adjust these based on your sanitized disaster data columns >>> ---
+DISASTER_MUN_COL = 'municipality' # Column name for Municipality in Delta table
+DISASTER_PROV_COL = 'province'    # Column name for Province in Delta table
+DISASTER_PSGC_COL = 'psgc_code'   # UNCOMMENT and add to sanitizer.py if you implement Municipality PSGC mapping
 
 
 def handle_import(mode_override: str = None):
@@ -27,304 +40,324 @@ def handle_import(mode_override: str = None):
     An 'overwrite' mode can be forced via command-line for initial setup or resets.
     """
     print(f"--- Starting Main Data Import ---")
-
-    # Ensure directories exist
-    os.makedirs(RAW_DATA_DIR, exist_ok=True)
     os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
-    os.makedirs(os.path.dirname(LAKEHOUSE_PATH), exist_ok=True)
-    os.makedirs(os.path.dirname(API_OUTPUT_FILE), exist_ok=True)
-    os.makedirs(os.path.dirname(DUCKDB_FILE), exist_ok=True)
+
+    # --- Construct absolute path to input CSV files ---
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        script_dir = os.getcwd()
+    raw_data_abs_path = os.path.join(script_dir, RAW_DATA_DIR)
+    processed_data_abs_path = os.path.join(script_dir, PROCESSED_DATA_DIR)
+    lakehouse_abs_path = os.path.join(script_dir, LAKEHOUSE_PATH)
+    # --- End Path Construction ---
 
 
-    print(f"Scanning for new CSV files in: {RAW_DATA_DIR}")
-    # Look for files ending in .csv (case-insensitive)
-    csv_files = glob.glob(os.path.join(RAW_DATA_DIR, '*.csv')) + glob.glob(os.path.join(RAW_DATA_DIR, '*.CSV'))
-    # Ensure uniqueness if both patterns match the same file
-    csv_files = list(set(csv_files))
-
+    csv_files = glob.glob(os.path.join(raw_data_abs_path, '*.csv')) # Use absolute path
 
     if not csv_files:
-        print("No new CSV files found in raw_data to import.")
-        print("--- Main Import Complete ---")
+        print(f"No new CSV files found in '{raw_data_abs_path}'.")
         return
 
-    print(f"Found {len(csv_files)} new CSV files to process.")
-    write_mode = mode_override if mode_override else 'append'
-    print(f"Using write mode: {write_mode.upper()}")
-
-    if write_mode == 'overwrite' and csv_files:
-         if os.path.exists(LAKEHOUSE_PATH):
-             print(f"Overwrite mode selected. Removing existing table at {LAKEHOUSE_PATH}...")
-             shutil.rmtree(LAKEHOUSE_PATH)
-
     processed_count = 0
-    for file_path in csv_files:
+    failed_count = 0
+    first_file = True
+
+    # Determine initial write mode
+    write_mode = 'append' # Default
+    if mode_override:
+        write_mode = mode_override
+        print(f"Forcing initial write mode: '{write_mode}'")
+    elif not os.path.exists(lakehouse_abs_path): # Use absolute path
+         write_mode = 'overwrite'
+         print("Lakehouse table does not exist. Setting initial write mode to 'overwrite'.")
+
+
+    for i, file_path in enumerate(csv_files):
         print(f"\nProcessing file: {os.path.basename(file_path)}...")
+        current_write_mode = write_mode
+
+        if write_mode == 'overwrite' and not first_file:
+            current_write_mode = 'append'
+            print("Switching to 'append' mode for subsequent files.")
+
         try:
-            # Explicitly set low_memory=False for potentially mixed types
-            df = pd.read_csv(file_path, low_memory=False)
-            if df.empty:
-                print("Skipping empty file.")
-                shutil.move(file_path, os.path.join(PROCESSED_DATA_DIR, os.path.basename(file_path)))
-                print("Moved empty file to processed directory.")
-                continue
+            df = pd.read_csv(file_path)
 
-            # Standard cleaning for the main dataset
-            print("Cleaning data...")
-            df['event_date_start'] = pd.to_datetime(df['event_date_start'], errors='coerce')
-            df['event_date_end'] = pd.to_datetime(df['event_date_end'], errors='coerce')
-
-            # --- <<< Ensure consistent UPPERCASE for join keys >>> ---
-            print("Standardizing case for province and municipality...")
-            if 'province' in df.columns:
-                 df['province'] = df['province'].fillna('Unknown').astype(str).str.strip().str.upper()
-            else:
-                 print("Warning: 'province' column not found.")
-                 df['province'] = 'UNKNOWN' # Add if missing, ensure uppercase
-
-            if 'municipality' in df.columns:
-                 df['municipality'] = df['municipality'].fillna('Unknown').astype(str).str.strip().str.upper()
-            else:
-                 print("Warning: 'municipality' column not found.")
-                 df['municipality'] = 'UNKNOWN' # Add if missing, ensure uppercase
-            # --- <<< END >>> ---
+            if DISASTER_MUN_COL in df.columns:
+                 df[DISASTER_MUN_COL] = df[DISASTER_MUN_COL].astype(str).str.upper().str.strip()
+            if DISASTER_PROV_COL in df.columns:
+                 df[DISASTER_PROV_COL] = df[DISASTER_PROV_COL].astype(str).str.upper().str.strip()
+            # If using PSGC, ensure it's loaded as string
+            if DISASTER_PSGC_COL in df.columns:
+                df[DISASTER_PSGC_COL] = df[DISASTER_PSGC_COL].astype(str).str.strip()
 
 
-            # Ensure other key string cols are strings
-            str_cols = ['commodity', 'disaster_category', 'disaster_name', 'disaster_type_raw', 'sanitation_remarks']
-            for col in str_cols:
-                if col in df.columns:
-                    # Also ensure these are uppercase if needed for consistency, or handle case-insensitively in queries
-                    df[col] = df[col].fillna('Unknown').astype(str) # .str.upper() # Optional: Uppercase others too?
+            if 'event_date_start' in df.columns:
+                df['event_date_start'] = pd.to_datetime(df['event_date_start'], errors='coerce').dt.date
+            if 'event_date_end' in df.columns:
+                df['event_date_end'] = pd.to_datetime(df['event_date_end'], errors='coerce').dt.date
 
-            # Convert numeric columns safely
-            numeric_cols = [
-                'year', # Year should also be numeric
-                'area_partially_damaged_ha', 'area_totally_damaged_ha',
-                'area_total_affected_ha', 'farmers_affected',
-                'losses_php_production_cost', 'losses_php_farm_gate',
-                'losses_php_grand_total'
-            ]
-            for col in numeric_cols:
-                 if col in df.columns: # Check if column exists before converting
-                    # Convert to numeric, errors become NaN
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-                    # Use pandas nullable Int64 type for integers that might have NaNs
-                    if col in ['year', 'farmers_affected']:
-                         # Attempt conversion to nullable Int64
-                         try:
-                            df[col] = df[col].astype('Int64')
-                         except (ValueError, TypeError):
-                            print(f"Warning: Could not convert column '{col}' to Int64. Check data for non-numeric values.")
-                            pass # Keep original type if conversion fails
+            required_cols = ['year', 'event_date_start', 'province', 'municipality', 'losses_php_grand_total']
+            # Add PSGC to required if using it for join
+            # Check if DISASTER_PSGC_COL exists as a variable AND if that column name should exist based on config
+            # This logic assumes DISASTER_PSGC_COL might be commented out
+            psgc_col_name = None
+            try:
+                psgc_col_name = DISASTER_PSGC_COL
+                # Check if it's uncommented by checking if it's assigned a string value
+                if isinstance(psgc_col_name, str):
+                    required_cols.append(psgc_col_name)
+            except NameError:
+                pass # DISASTER_PSGC_COL is commented out or not defined
 
-            # Fill NaNs in specific numeric columns with 0.0 where appropriate
-            cols_to_fill_zero = [
-                 'area_partially_damaged_ha', 'area_totally_damaged_ha', 'area_total_affected_ha',
-                 'losses_php_production_cost', 'losses_php_farm_gate', 'losses_php_grand_total'
-            ]
-            for col in cols_to_fill_zero:
-                 if col in df.columns:
-                      if pd.api.types.is_numeric_dtype(df[col]):
-                          df[col] = df[col].fillna(0.0)
-                      else:
-                           print(f"Warning: Column '{col}' expected numeric but isn't. Skipping fillna(0.0).")
+            if not all(col in df.columns for col in required_cols):
+                 missing = [col for col in required_cols if col not in df.columns]
+                 print(f"ERROR: File {os.path.basename(file_path)} is missing required columns: {missing}. Skipping.")
+                 failed_count += 1
+                 continue
 
-
-            print(f"Read and cleaned {len(df)} rows.")
-
-            # Write to MAIN Delta Lake
-            current_write_mode = write_mode if processed_count == 0 and write_mode == 'overwrite' else 'append'
-            safe_lakehouse_path = os.path.normpath(LAKEHOUSE_PATH)
+            print(f"Writing {len(df)} rows to Delta table in '{current_write_mode}' mode...")
             write_deltalake(
-                safe_lakehouse_path,
+                lakehouse_abs_path, # Use absolute path
                 df,
                 mode=current_write_mode,
-                schema_mode='merge' # Allow schema changes like new columns
             )
-            print(f"Successfully wrote data to MAIN Delta table using {current_write_mode.upper()} mode.")
+            print("Write successful.")
 
-            # Move processed file
-            processed_file_path = os.path.join(PROCESSED_DATA_DIR, os.path.basename(file_path))
-            if os.path.exists(processed_file_path):
-                os.remove(processed_file_path)
-            shutil.move(file_path, processed_file_path)
-            print(f"Moved processed file to: {processed_file_path}")
-            processed_count += 1
+            try:
+                processed_file_path = os.path.join(processed_data_abs_path, os.path.basename(file_path)) # Use absolute path
+                if os.path.exists(processed_file_path): os.remove(processed_file_path)
+                shutil.move(file_path, processed_file_path)
+                print(f"Moved processed file to: {processed_file_path}")
+                processed_count += 1
+            except Exception as move_err:
+                 print(f"ERROR moving file {os.path.basename(file_path)} after successful processing: {move_err}")
+                 failed_count += 1
 
+        except pd.errors.EmptyDataError:
+            print(f"Skipping empty file: {os.path.basename(file_path)}")
+            try:
+                processed_file_path = os.path.join(processed_data_abs_path, os.path.basename(file_path)) # Use absolute path
+                if os.path.exists(processed_file_path): os.remove(processed_file_path)
+                shutil.move(file_path, processed_file_path)
+                print(f"Moved empty file to: {processed_file_path}")
+            except Exception as move_err:
+                print(f"ERROR moving empty file {os.path.basename(file_path)}: {move_err}")
+                failed_count += 1
         except Exception as e:
             print(f"ERROR processing file {os.path.basename(file_path)}: {e}")
             import traceback
-            traceback.print_exc() # Print full traceback for import errors
-            print("Skipping this file and continuing...")
+            traceback.print_exc()
+            failed_count += 1
 
-    print(f"\nProcessed {processed_count} files for main table.")
-    print("--- Main Import Complete ---")
+        first_file = False
+
+    print(f"\nSuccessfully imported and moved {processed_count} CSV file(s).")
+    if failed_count > 0:
+        print(f"Failed to process or move {failed_count} file(s). Please check logs.")
+    print("--- Import Complete ---")
+
+
+def df_to_geojson(df, geometry_col='geometry_geojson'):
+    """Converts a DataFrame with a GeoJSON geometry string column to a GeoJSON FeatureCollection dictionary."""
+    features = []
+    # Adjust required columns based on whether PSGC is expected
+    base_required = ['municipality_name', 'province_name', geometry_col]
+    psgc_col_name = None
+    try:
+        psgc_col_name = GEOJSON_PSGC_PROP # Check if this constant exists
+        if isinstance(psgc_col_name, str):
+            base_required.append('psgc_code') # Add psgc_code alias used in query
+    except NameError:
+        pass # PSGC not configured
+
+    # Check if essential geometry/ID columns exist in the DataFrame
+    if not all(col in df.columns for col in base_required):
+        missing = [col for col in base_required if col not in df.columns]
+        print(f"ERROR in df_to_geojson: DataFrame is missing required columns for GeoJSON creation: {missing}")
+        return {"type": "FeatureCollection", "features": []} # Return empty valid GeoJSON
+
+    for _, row in df.iterrows():
+        # Ensure geometry is valid before proceeding
+        geom_str = row.get(geometry_col)
+        if pd.isna(geom_str):
+            print(f"Skipping row for {row.get('municipality_name', 'Unknown')} due to missing geometry.")
+            continue
+        try:
+             geometry_obj = json.loads(geom_str)
+        except (json.JSONDecodeError, TypeError) as e:
+            print(f"Skipping row for {row.get('municipality_name', 'Unknown')} due to invalid geometry string: {geom_str}, Error: {e}")
+            continue
+
+        # Prepare properties, excluding geometry
+        properties = row.drop(geometry_col, errors='ignore').to_dict()
+        cleaned_properties = {}
+        for k, v in properties.items():
+            if pd.isna(v):
+                cleaned_properties[k] = None
+            elif isinstance(v, (np.int64, np.int32)):
+                 cleaned_properties[k] = int(v)
+            elif isinstance(v, (np.float64, np.float32)):
+                 if np.isnan(v) or np.isinf(v): cleaned_properties[k] = None
+                 else: cleaned_properties[k] = float(v)
+            elif isinstance(v, (datetime, pd.Timestamp, datetime.date)):
+                 cleaned_properties[k] = v.isoformat()
+            else:
+                 cleaned_properties[k] = v
+
+        features.append({
+            "type": "Feature",
+            "geometry": geometry_obj,
+            "properties": cleaned_properties
+        })
+
+    return {"type": "FeatureCollection", "features": features}
 
 
 def handle_export():
     """
-    Runs the analysis query on the MAIN Delta Lake table using DuckDB
-    and exports the results to a JSON file for the API. Uses a persistent DB file.
-    Tries both read_delta and delta_scan function names.
-    Includes robust integer casting fix.
+    Analyzes the main Delta Lake table using DuckDB, joins with Municipality GIS data,
+    and exports aggregated results as GeoJSON.
     """
-    print("--- Starting Export from Main Table ---")
-    os.makedirs(os.path.dirname(API_OUTPUT_FILE), exist_ok=True)
-    os.makedirs(os.path.dirname(DUCKDB_FILE), exist_ok=True) # Ensure DB file directory exists
+    print("--- Starting Data Export for API ---")
+    con = None
 
-    safe_lakehouse_path = os.path.normpath(LAKEHOUSE_PATH) # Ensure path is OS-correct
-    safe_farmer_path = os.path.normpath(FARMER_LAKEHOUSE_PATH) # Path for farmer registry
-
-    if not os.path.exists(safe_lakehouse_path):
-        print(f"ERROR: Main Lakehouse table not found at '{safe_lakehouse_path}'.")
-        print("Please run the 'import' command first.")
-        print("--- Export Failed ---")
-        return
-
-    if not os.path.exists(safe_farmer_path):
-        print(f"ERROR: Farmer Registry table not found at '{safe_farmer_path}'.")
-        print("Please run the 'process_farmer_registry.py' script first.")
-        print("--- Export Failed ---")
-        return
-
-    print(f"Connecting to DuckDB file: {DUCKDB_FILE}...")
-    con = None # Initialize con to None
+    # --- Construct absolute paths ---
     try:
-        # Connect to a file instead of in-memory
-        con = duckdb.connect(database=DUCKDB_FILE, read_only=False)
-        print("DuckDB connection established.")
-        print(f"DuckDB Version: {duckdb.__version__}")
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        script_dir = os.getcwd()
 
+    duckdb_abs_path = os.path.join(script_dir, DUCKDB_FILE)
+    boundaries_abs_path = os.path.join(script_dir, BOUNDARIES_GEOJSON)
+    lakehouse_abs_path = os.path.join(script_dir, LAKEHOUSE_PATH)
+    api_output_abs_path = os.path.join(script_dir, API_OUTPUT_FILE)
+    api_output_dir = os.path.dirname(api_output_abs_path)
+    # --- End Path Construction ---
 
-        # --- Load Delta Extension ---
-        print("Attempting to load DuckDB delta extension...")
+    try:
+        con = duckdb.connect(database=duckdb_abs_path, read_only=False)
+        print("Connected to DuckDB.")
+        con.sql("INSTALL spatial; LOAD spatial;")
+        print("Loaded DuckDB spatial extension.")
+
+        # --- Load Municipal Boundaries ---
+        if not os.path.exists(boundaries_abs_path):
+             print(f"ERROR: Boundaries GeoJSON file not found at {boundaries_abs_path}")
+             return
         try:
-            con.load_extension('delta')
-            print("Delta extension loaded successfully (likely already installed).")
-        except (duckdb.IOException, duckdb.CatalogException) as load_error1:
-            print(f"Initial load failed ({load_error1}). Attempting to install...")
-            try:
-                con.install_extension('delta')
-                print("Delta extension installed successfully.")
-                con.load_extension('delta')
-                print("Delta extension loaded successfully after install.")
-            except (duckdb.IOException, duckdb.CatalogException) as install_error:
-                 print(f"FATAL: Failed to install or load delta extension: {install_error}")
-                 raise install_error
+            # Load Municipality data directly
+            con.sql(f"""
+                CREATE OR REPLACE TABLE municipal_boundaries AS
+                SELECT
+                    ST_GeomFromWKB(geometry) AS geom,
+                    properties->>'{GEOJSON_MUN_PROP}' AS municipality_name,
+                    properties->>'{GEOJSON_PROV_PROP}' AS province_name,
+                    properties->>'{GEOJSON_PSGC_PROP}' AS psgc_code -- Municipality PSGC
+                FROM ST_Read('{boundaries_abs_path}');
+            """)
+            # Index on municipality identifiers
+            con.sql("CREATE INDEX IF NOT EXISTS mun_bound_psgc_idx ON municipal_boundaries (psgc_code);")
+            con.sql("CREATE INDEX IF NOT EXISTS mun_bound_name_idx ON municipal_boundaries (UPPER(province_name), UPPER(municipality_name));")
+            print(f"Loaded and indexed boundaries from '{os.path.basename(BOUNDARIES_GEOJSON)}'.")
+        except Exception as e:
+            print(f"ERROR loading or indexing GeoJSON: {e}")
+            import traceback; traceback.print_exc(); return
 
-        # --- Determine Correct Delta Function Name ---
-        delta_read_function = None
-        print("Checking available Delta read functions...")
+        # --- Read Main Disaster Data from Delta Lake ---
+        print("Reading main disaster data from Delta Lake...")
         try:
-            # Check for read_delta first (more common)
-            functions = con.sql("SELECT function_name FROM duckdb_functions() WHERE function_name IN ('read_delta', 'delta_scan')").df()
-            if 'read_delta' in functions['function_name'].values:
-                delta_read_function = 'read_delta'
-            elif 'delta_scan' in functions['function_name'].values:
-                 delta_read_function = 'delta_scan'
-            else:
-                 raise duckdb.CatalogException("Neither 'read_delta' nor 'delta_scan' found after loading extension!")
-        except Exception as check_err:
-             print(f"FATAL: Error checking for Delta read functions: {check_err}")
-             raise check_err
-        print(f"Using Delta read function: '{delta_read_function}'")
+             if not os.path.exists(lakehouse_abs_path):
+                  print(f"ERROR: Disaster Delta table path not found at {lakehouse_abs_path}")
+                  return
+             dt = DeltaTable(lakehouse_abs_path)
+             main_disasters_df = dt.to_pandas()
+             # Ensure correct types after loading from Delta/Pandas
+             psgc_col_exists_in_df = False
+             try:
+                 # Check if DISASTER_PSGC_COL is defined and is a string
+                 if isinstance(DISASTER_PSGC_COL, str) and DISASTER_PSGC_COL in main_disasters_df.columns:
+                      main_disasters_df[DISASTER_PSGC_COL] = main_disasters_df[DISASTER_PSGC_COL].astype(str)
+                      psgc_col_exists_in_df = True
+             except NameError:
+                 pass # DISASTER_PSGC_COL likely commented out
 
+             if DISASTER_MUN_COL in main_disasters_df.columns:
+                   main_disasters_df[DISASTER_MUN_COL] = main_disasters_df[DISASTER_MUN_COL].astype(str).str.upper()
+             if DISASTER_PROV_COL in main_disasters_df.columns:
+                   main_disasters_df[DISASTER_PROV_COL] = main_disasters_df[DISASTER_PROV_COL].astype(str).str.upper()
 
-        # --- Simplify Execution - Read Delta into a View First ---
-        print(f"Creating temporary view 'disasters_view' from Delta table: {safe_lakehouse_path}")
-        # Use CREATE OR REPLACE VIEW for idempotency
-        con.sql(f"CREATE OR REPLACE TEMPORARY VIEW disasters_view AS SELECT * FROM {delta_read_function}('{safe_lakehouse_path}');")
-        print("Temporary view created.")
+             con.register('main_disasters_df', main_disasters_df)
+             print(f"Read {len(main_disasters_df)} rows from disaster Delta table.")
+        except Exception as e:
+             print(f"ERROR reading disaster Delta table at {lakehouse_abs_path}: {e}")
+             import traceback; traceback.print_exc(); return
 
-        print(f"Creating temporary view 'farmers_view' from Delta table: {safe_farmer_path}")
-        con.sql(f"CREATE OR REPLACE TEMPORARY VIEW farmers_view AS SELECT * FROM {delta_read_function}('{safe_farmer_path}');")
+        # --- Define Join Condition ---
+        if psgc_col_exists_in_df:
+             join_condition = f"md.{DISASTER_PSGC_COL} = mb.psgc_code" # Join using Mun PSGC
+             print(f"Using PSGC ('{DISASTER_PSGC_COL}' and 'psgc_code') for joining.")
+        else:
+             join_condition = f"UPPER(md.{DISASTER_MUN_COL}) = UPPER(mb.municipality_name) AND UPPER(md.{DISASTER_PROV_COL}) = UPPER(mb.province_name)"
+             print("Warning: PSGC code column not found or configured in disaster data. Falling back to joining on Province and Municipality names. Ensure consistency.")
 
-        print("Creating pre-aggregated view 'province_farmer_summary'...")
-        # Pre-aggregate farmer data by province to avoid join multiplication
-        con.sql("""
-            CREATE OR REPLACE TEMPORARY VIEW province_farmer_summary AS
-            SELECT
-                province,
-                SUM(registered_rice_farmers) AS total_registered_farmers,
-                SUM(total_declared_rice_area_ha) AS total_rice_area
-            FROM farmers_view
-            GROUP BY province;
-        """)
-        print("Farmer data views created.")
-
-
-        # --- Execute Analysis Query on the View ---
-        analysis_sql = f"""
-        WITH aggregated_disasters AS (
-            SELECT
-                province,
-                disaster_category,
-                SUM(losses_php_grand_total) AS total_losses_php,
-                -- Use coalesce to handle potential NULLs (represented as NaN or None by Pandas Int64) before summing
-                -- DuckDB's SUM naturally ignores NULLs, but casting NULL to INTEGER might be needed depending on version
-                -- Safest approach: SUM ignores NULLs, then cast result if needed.
-                SUM(farmers_affected)::INTEGER AS total_farmers_affected,
-                COUNT(*) AS number_of_events
-            FROM disasters_view -- Query the main disasters view
-            GROUP BY province, disaster_category
-        )
+        # --- Define the Spatial Aggregation Query (Direct Join) ---
+        query = f"""
         SELECT
-            d.province,
-            d.disaster_category,
-            d.total_losses_php,
-            d.total_farmers_affected,
-            f.total_registered_farmers,
-            -- Calculate percentage of affected farmers, handle division by zero
-            (d.total_farmers_affected / NULLIF(f.total_registered_farmers, 0)) * 100 AS pct_farmers_affected,
-            d.number_of_events,
-            f.total_rice_area
-        FROM aggregated_disasters d
-        LEFT JOIN province_farmer_summary f ON d.province = f.province
-        ORDER BY d.total_losses_php DESC
-        LIMIT 1000
+            mb.municipality_name,
+            mb.province_name,
+            mb.psgc_code,
+            SUM(md.losses_php_grand_total) AS total_loss_php,
+            COUNT(*) AS incident_count,
+            -- Add other aggregations: SUM(md.farmers_affected), AVG(md.area_total_affected_ha), etc.
+            ST_AsGeoJSON(mb.geom) AS geometry_geojson -- Export geometry directly
+        FROM main_disasters_df md
+        JOIN municipal_boundaries mb -- Join directly with municipal boundaries
+          ON {join_condition}
+        -- WHERE clauses for filtering (apply to 'md' table)
+        -- e.g., WHERE md.year >= 2020
+        GROUP BY
+            mb.province_name,
+            mb.municipality_name,
+            mb.psgc_code,
+            mb.geom -- Group by the municipality geometry
+        ORDER BY
+            mb.province_name,
+            mb.municipality_name;
         """
-        # Note: If farmers_affected is Int64 and contains pd.NA, DuckDB might need explicit COALESCE or CAST.
-        # Alternative SUM: SUM(COALESCE(farmers_affected, 0))::INTEGER AS total_farmers_affected
 
-        print("Executing analysis query on view...")
-        results_df = con.sql(analysis_sql).to_df()
-        print("Analysis complete.")
+        print("Executing spatial aggregation query (Municipalities)...")
+        results_df = con.sql(query).df()
+        print(f"Query returned {len(results_df)} aggregated municipalities.")
 
-        # --- Process and Save Results ---
-        print("Cleaning results for JSON...")
-        # Convert types AFTER query
-        results_df['total_losses_php'] = pd.to_numeric(results_df['total_losses_php'], errors='coerce').fillna(0.0)
-        results_df['total_rice_area'] = pd.to_numeric(results_df['total_rice_area'], errors='coerce').fillna(0.0)
-        results_df['pct_farmers_affected'] = pd.to_numeric(results_df['pct_farmers_affected'], errors='coerce').fillna(0.0)
+        # --- Convert results to GeoJSON FeatureCollection ---
+        geojson_output = df_to_geojson(results_df, geometry_col='geometry_geojson')
 
-        # Apply robust integer conversion (handle potential NULLs/NaNs from SUM if source had issues)
-        results_df['total_farmers_affected'] = pd.to_numeric(results_df['total_farmers_affected'], errors='coerce').fillna(0).astype(int)
-        results_df['total_registered_farmers'] = pd.to_numeric(results_df['total_registered_farmers'], errors='coerce').fillna(0).astype(int)
-        results_df['number_of_events'] = pd.to_numeric(results_df['number_of_events'], errors='coerce').fillna(0).astype(int)
+        # --- Save GeoJSON to API output file ---
+        os.makedirs(api_output_dir, exist_ok=True)
+        with open(api_output_abs_path, 'w') as f:
+            json.dump(geojson_output, f, indent=2)
+        print(f"Successfully exported aggregated GeoJSON data to '{api_output_abs_path}'")
 
-        # Replace NaN/Inf just before saving (important after numeric conversions)
-        results_df = results_df.replace([np.inf, -np.inf], None).where(pd.notna(results_df), None)
-        print("JSON cleaning complete.")
-
-
-        results_df.to_json(API_OUTPUT_FILE, orient='records', indent=4)
-        print(f"Successfully exported {len(results_df)} summary rows to '{API_OUTPUT_FILE}'.")
-        print("\n--- Exported Data Sample ---")
-        print(results_df.head().to_string())
-
+    # --- Error Handling ---
+    except ImportError as e:
+         print(f"IMPORT ERROR: {e}. Make sure necessary libraries (duckdb, deltalake, pandas, spatial extension dependencies like GDAL) are installed.")
+    except duckdb.IOException as e:
+         print(f"DUCKDB IO ERROR (often path related): {e}")
+         import traceback; traceback.print_exc()
+    except duckdb.BinderException as e:
+         print(f"DUCKDB BINDER ERROR (often column name mismatch in query): {e}")
+         import traceback; traceback.print_exc()
     except duckdb.CatalogException as e:
-         print(f"DUCKDB CATALOG ERROR during export: {e}")
-         import traceback
-         traceback.print_exc() # Print full trace for catalog errors too
+         print(f"DUCKDB CATALOG ERROR: {e}")
+         import traceback; traceback.print_exc()
     except TypeError as e:
          print(f"TYPE ERROR during export (often related to casting): {e}")
-         import traceback
-         traceback.print_exc() # Print full trace for type errors
+         import traceback; traceback.print_exc()
     except Exception as e:
         print(f"UNEXPECTED ERROR during export: {e}")
-        import traceback
-        traceback.print_exc()
+        import traceback; traceback.print_exc()
     finally:
         if con:
             con.close()
@@ -341,7 +374,7 @@ if __name__ == "__main__":
     import_parser.add_argument('--mode', type=str, choices=['overwrite', 'append'], default=None,
                               help="Force write mode: 'overwrite' to replace MAIN table (use carefully!), defaults to 'append'.")
 
-    export_parser = subparsers.add_parser('export', help="Analyze the MAIN lakehouse table and export results for the API.")
+    export_parser = subparsers.add_parser('export', help="Analyze the MAIN lakehouse table with Municipality GIS data and export results for the API.")
 
     args = parser.parse_args()
 

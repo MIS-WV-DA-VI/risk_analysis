@@ -10,6 +10,7 @@ TARGET_SHEET_NAME = 'Consolidated 2010 - Present'
 OUTPUT_DIR = 'exported'
 CLEAN_OUTPUT_FILENAME = 'clean_data.csv'
 ERROR_OUTPUT_FILENAME = 'erroneous_rows.csv'
+PSGC_LOOKUP_FILENAME = 'psgc_lookup.csv' # PSGC Lookup file
 
 # This mapping is updated to handle the column names in your consolidated file.
 COLUMN_MAPPING = {
@@ -34,13 +35,9 @@ COLUMN_MAPPING = {
 
 def clean_numeric_column(series):
     """ Cleans a pandas Series expecting numeric data. Handles commas, hyphens, and errors. """
-    # Convert to string first to handle potential mixed types robustly
     series_str = series.astype(str)
-    # Perform cleaning steps
     series_cleaned = series_str.str.replace(',', '', regex=False).str.strip().replace('-', '0', regex=False)
-    # Convert to numeric, coercing errors
     series_numeric = pd.to_numeric(series_cleaned, errors='coerce')
-    # Fill any resulting NaNs (from errors or original NaNs) with 0
     return series_numeric.fillna(0)
 
 
@@ -50,46 +47,38 @@ def parse_date_range_smart(date_str, year_original_val):
     Uses year_original_val primarily as a fallback if year is missing in the string.
     Returns: (start_date, end_date, remark) or (None, None, None) on failure.
     """
-    if pd.isna(date_str): # Year is not strictly required here if date_str has it
+    if pd.isna(date_str):
         return None, None, None
 
-    # Handle if date_str is already a datetime object from pandas
     if isinstance(date_str, datetime):
         date = date_str.date()
         remark = "Parsed from a native Excel date format."
-        # Use date's year if year_original_val is missing
         year_to_use = date.year if pd.isna(year_original_val) else int(year_original_val)
-        if abs(date.year - year_to_use) > 1:
+        if pd.notna(year_original_val) and abs(date.year - year_to_use) > 1:
              return None, None, f"Year in Excel date ({date.year}) differs significantly from Year column ({year_to_use})."
         return date, date, remark
 
     date_str = str(date_str).strip()
-
-    # Determine fallback year only if year_original_val is valid
     fallback_year = None
     if pd.notna(year_original_val):
         try:
             fallback_year = int(year_original_val)
         except (ValueError, TypeError):
-             return None, None, "Invalid Year column value" # Fail early if fallback is invalid
+             return None, None, "Invalid Year column value"
 
     try:
-        # --- NEW LOGIC: Try specific text patterns FIRST ---
-
         # Pattern 1 & 4 Combined: "Month Day, Year" OR "Month Day-Day, Year"
         match = re.match(r'^([a-zA-Z]+)\s+(\d{1,2})(?:\s*-\s*(\d{1,2}))?,\s*(\d{4})$', date_str, re.IGNORECASE)
         if match:
             month_str, start_day, end_day, year_from_str = match.groups()
             year_val = int(year_from_str)
             start_date = datetime.strptime(f"{month_str} {start_day} {year_val}", "%B %d %Y").date()
-
-            if end_day: # A range was found, e.g., "15-17"
+            if end_day:
                 end_date = start_date.replace(day=int(end_day))
                 remark = "Parsed from 'Month Day-Day, Year' format."
-            else: # It's a single day
+            else:
                 end_date = start_date
                 remark = "Parsed as a single day event."
-            # Use parsed year for validation if fallback_year exists
             if fallback_year is not None and abs(year_val - fallback_year) > 1:
                  return None, None, f"Year in date string ({year_val}) differs significantly from Year column ({fallback_year})."
             return start_date, end_date, remark
@@ -121,7 +110,7 @@ def parse_date_range_smart(date_str, year_original_val):
             remark = "Parsed from month-only value; assumed full month."
             return start_date, end_date, remark
 
-        # --- Fallback to pd.to_datetime for standard formats like YYYY-MM-DD ---
+        # --- Fallback to pd.to_datetime ---
         if re.match(r'^\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}:\d{2})?$', date_str):
             dt_obj = pd.to_datetime(date_str, errors='coerce')
             if not pd.isna(dt_obj):
@@ -131,13 +120,11 @@ def parse_date_range_smart(date_str, year_original_val):
                 remark = "Parsed from a standard timestamp format."
                 return date, date, remark
 
-        # --- Final fallback for other complex text ranges ---
-        if fallback_year is None: # Cannot proceed without a year context
+        # --- Final fallback ---
+        if fallback_year is None:
              return None, None, "Missing Year column value needed for ambiguous date string."
-
         parts = re.split(r'\s*-\s*|\s+to\s+', date_str, flags=re.IGNORECASE)
-        start_str = parts[0]
-        end_str = parts[-1]
+        start_str, end_str = parts[0], parts[-1]
         remark_parts = []
 
         # Process Start String
@@ -155,7 +142,7 @@ def parse_date_range_smart(date_str, year_original_val):
 
         # Process End String
         match_end_year = re.search(r'(\d{4})', end_str)
-        end_year = int(match_end_year.group(1)) if match_end_year else start_year # Default to start_year
+        end_year = int(match_end_year.group(1)) if match_end_year else start_year
         end_str_clean = re.sub(r'\s*,?\s*\d{4}', '', end_str).strip()
         if len(parts) == 1:
             end_date = start_date
@@ -188,29 +175,49 @@ def parse_date_range_smart(date_str, year_original_val):
         return start_date, end_date, " ".join(remark_parts)
 
     except Exception as e:
-        # print(f"DEBUG: Failed parsing '{date_str}' with year {fallback_year}. Error: {e}") # Uncomment for debugging
+        # print(f"DEBUG: Failed parsing '{date_str}' with year {fallback_year}. Error: {e}")
         return None, None, None
 
 
-def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_filename):
-    """ Main function to orchestrate the data sanitation process. """
+def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_filename, psgc_lookup_filename):
+    """ Main function to orchestrate the data sanitation process, including PSGC lookup. """
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
     except NameError:
         script_dir = os.getcwd()
         print("Warning: Could not determine script directory, using current working directory.")
     input_path = os.path.join(script_dir, input_filename)
+    psgc_lookup_path = os.path.join(script_dir, psgc_lookup_filename) # Path for PSGC lookup
     output_path = os.path.join(script_dir, output_dir)
-    os.makedirs(output_path, exist_ok=True)
+    os.makedirs(output_path, exist_ok=True) # Create output dir if needed
     clean_path = os.path.join(output_path, clean_filename)
     error_path = os.path.join(output_path, error_filename)
 
     print(f"--- Starting Data Sanitation for '{input_path}' ---")
     if not os.path.exists(input_path):
         print(f"Error: Input file not found at '{input_path}'.")
-        print(f"       Current working directory: {os.getcwd()}")
-        print(f"       Script directory: {script_dir}")
         return
+
+    # --- Load PSGC Lookup Data ---
+    psgc_lookup_df = None
+    if not os.path.exists(psgc_lookup_path):
+         print(f"Warning: PSGC Lookup file not found at '{psgc_lookup_path}'. PSGC codes will not be added.")
+    else:
+        try:
+            psgc_lookup_df = pd.read_csv(psgc_lookup_path)
+            required_psgc_cols = ['province_name', 'municipality_name', 'psgc_code']
+            if not all(col in psgc_lookup_df.columns for col in required_psgc_cols):
+                print(f"Error: PSGC Lookup file '{psgc_lookup_filename}' is missing required columns: {required_psgc_cols}. Skipping PSGC lookup.")
+                psgc_lookup_df = None
+            else:
+                 psgc_lookup_df['province_name'] = psgc_lookup_df['province_name'].astype(str).str.upper().str.strip()
+                 psgc_lookup_df['municipality_name'] = psgc_lookup_df['municipality_name'].astype(str).str.upper().str.strip()
+                 psgc_lookup_df['psgc_code'] = psgc_lookup_df['psgc_code'].astype(str).str.strip()
+                 print(f"Loaded {len(psgc_lookup_df)} PSGC lookup entries.")
+                 psgc_lookup_df = psgc_lookup_df[required_psgc_cols].drop_duplicates(subset=['province_name', 'municipality_name'])
+        except Exception as e:
+            print(f"Error loading PSGC Lookup file '{psgc_lookup_filename}': {e}. Skipping PSGC lookup.")
+            psgc_lookup_df = None
 
     try:
         df = pd.read_excel(input_path, sheet_name=sheet_name, header=1, engine='openpyxl')
@@ -225,68 +232,84 @@ def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_
     df_original_structure = df.copy()
     df_original_structure['source_row_number'] = df.index + 3
 
-    # Process data in a separate DataFrame
     df_processed = df.rename(columns=lambda c: c.strip())
     df_processed = df_processed.rename(columns=COLUMN_MAPPING)
-
-    # Clean original year column first, store it but don't overwrite later
     df_processed['year_original'] = pd.to_numeric(df_processed.get('year_original'), errors='coerce')
 
-    # Parse dates using the original year as context
-    parsed_dates = df_processed.apply(lambda row: parse_date_range_smart(row.get('date_range_str'), row.get('year_original')), axis=1)
-    df_processed[['temp_start', 'temp_end', 'sanitation_remarks']] = pd.DataFrame(parsed_dates.tolist(), index=df_processed.index)
-    df_processed['event_date_start'] = pd.to_datetime(df_processed['temp_start'], errors='coerce')
-    df_processed['event_date_end'] = pd.to_datetime(df_processed['temp_end'], errors='coerce')
-    df_processed = df_processed.drop(columns=['temp_start', 'temp_end'])
-
-    # --- NEW: Override the 'year' column with the year from event_date_start ---
-    # Create the 'year' column *after* parsing dates
-    df_processed['year'] = df_processed['event_date_start'].dt.year
-    # Convert to nullable integer type Int64 to handle potential NaT from parsing errors
-    df_processed['year'] = df_processed['year'].astype('Int64')
-    # --- End Year Override ---
-
-
-    # --- Uppercase Conversion ---
+    # --- Uppercase Conversion (BEFORE PSGC Lookup) ---
     string_cols_to_upper = [
         'province', 'municipality', 'commodity',
         'disaster_type_raw', 'disaster_category', 'disaster_name'
     ]
     for col in string_cols_to_upper:
         if col in df_processed.columns:
-            df_processed[col] = df_processed[col].fillna('').astype(str).str.upper()
+            # Keep NaN as NaN for now, convert case only on actual strings
+            df_processed[col] = df_processed[col].astype(str).str.upper().str.strip()
+            # Replace empty strings potentially created from NaN conversion back to None/NaN
+            df_processed[col] = df_processed[col].replace({'^$': None, 'NAN': None}, regex=True)
 
-    # Clean numeric columns (excluding the now derived 'year')
+
+    # --- PSGC Lookup/Merge ---
+    if psgc_lookup_df is not None:
+         print("Performing PSGC lookup...")
+         if 'province' in df_processed.columns and 'municipality' in df_processed.columns:
+              df_processed = pd.merge(
+                   df_processed,
+                   psgc_lookup_df,
+                   left_on=['province', 'municipality'],
+                   right_on=['province_name', 'municipality_name'],
+                   how='left'
+              )
+              df_processed = df_processed.drop(columns=['province_name', 'municipality_name'], errors='ignore')
+              print("PSGC lookup complete.")
+         else:
+              print("Warning: 'province' or 'municipality' column not found after renaming. Skipping PSGC lookup.")
+              df_processed['psgc_code'] = None # Add empty column if lookup fails
+    else:
+         df_processed['psgc_code'] = None # Add empty column if lookup file wasn't loaded
+
     numeric_cols = list(set(COLUMN_MAPPING.values()) - {'year_original', 'date_range_str', 'province', 'municipality', 'commodity', 'disaster_type_raw', 'disaster_category', 'disaster_name'}) \
-                 + ['year'] # Add the new year col here if we need numeric cleaning (unlikely now)
+                 + ['year']
     for col in numeric_cols:
-         # Exclude the newly created year column if it exists in numeric_cols list
         if col in df_processed.columns and col != 'year':
             df_processed[col] = clean_numeric_column(df_processed[col])
-
 
     # Clean commodity codes AFTER converting to upper
     if 'commodity' in df_processed.columns:
         df_processed['commodity'] = df_processed['commodity'].astype(str).str.replace(r'^\d+\s*-\s*', '', regex=True).str.strip()
+        # Handle potential empty strings after stripping code
+        df_processed['commodity'] = df_processed['commodity'].replace({'^$': None}, regex=True)
 
+
+    parsed_dates = df_processed.apply(lambda row: parse_date_range_smart(row.get('date_range_str'), row.get('year_original')), axis=1)
+    df_processed[['temp_start', 'temp_end', 'sanitation_remarks']] = pd.DataFrame(parsed_dates.tolist(), index=df_processed.index)
+    df_processed['event_date_start'] = pd.to_datetime(df_processed['temp_start'], errors='coerce')
+    df_processed['event_date_end'] = pd.to_datetime(df_processed['temp_end'], errors='coerce')
+    df_processed = df_processed.drop(columns=['temp_start', 'temp_end'])
+    df_processed['year'] = df_processed['event_date_start'].dt.year
+    df_processed['year'] = df_processed['year'].astype('Int64')
 
     # --- Validation ---
     error_reasons = []
     processed_indices = df_processed.index
     for index, row in df_processed.iterrows():
         reasons = []
-        # Use year_original for checking numeric validity
-        year_original_val = row.get('year_original')
-        start_date = row.get('event_date_start')
-        end_date = row.get('event_date_end')
+        year_original_val, start_date, end_date = row.get('year_original'), row.get('event_date_start'), row.get('event_date_end')
+        psgc_val = row.get('psgc_code')
+        province_val = row.get('province') # Get value after potential uppercase
+        municipality_val = row.get('municipality') # Get value after potential uppercase
 
         # Basic Validation
-        if pd.isna(row.get('province')) or str(row.get('province')).strip() == '': reasons.append("Missing essential field (province, municipality, or commodity).")
-        # Check if original year value was valid number
+        # Check for NaN or empty string after stripping
+        if pd.isna(province_val) or str(province_val).strip() == '':
+             reasons.append("Missing essential field (province).")
+        if pd.isna(municipality_val) or str(municipality_val).strip() == '':
+             reasons.append("Missing essential field (municipality).")
+        # Check original year validity
         if pd.isna(year_original_val):
             original_year_str = df_original_structure.loc[index, 'YEAR (DATE OF OCCURENCE)']
             reasons.append(f"Original Year column is not a valid number: '{original_year_str}'")
-        # Check if date parsing itself failed
+        # Check date parsing validity
         if pd.isna(start_date):
             original_date_str = df_original_structure.loc[index, 'ACTUAL DATE OF OCCURENCE']
             original_date_str = original_date_str if isinstance(original_date_str, (str, int, float)) else str(original_date_str)
@@ -296,11 +319,17 @@ def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_
             reasons.append(error_msg)
         if row.get('losses_php_grand_total', 0) == 0: reasons.append("Missing or zero Grand Total for PHP loss.")
 
-        # Date Logic Validation (only if dates were parsed successfully)
+        # PSGC Validation
+        if pd.isna(psgc_val) and psgc_lookup_df is not None:
+             # Avoid double-flagging if province/municipality was already missing
+             if not ("Missing essential field" in "; ".join(reasons)):
+                   prov_disp = province_val if pd.notna(province_val) else "MISSING"
+                   mun_disp = municipality_val if pd.notna(municipality_val) else "MISSING"
+                   reasons.append(f"PSGC code not found for province/municipality: '{prov_disp}' / '{mun_disp}'.")
+
+        # Date Logic Validation
         if pd.notna(start_date) and pd.notna(end_date):
-            # Check 1: Start date <= End date
             if start_date > end_date: reasons.append(f"Date range invalid: Start date ({start_date.date()}) is after end date ({end_date.date()}).")
-            # Check 2: Year consistency - REMOVED as year is now derived
 
         # Area Consistency Validation
         partial, totally, total = row.get('area_partially_damaged_ha', 0), row.get('area_totally_damaged_ha', 0), row.get('area_total_affected_ha', 0)
@@ -309,7 +338,6 @@ def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_
 
         error_reasons.append("; ".join(reasons))
 
-    # Add error reasons using the stored index, aligned with df_processed
     error_reasons_series = pd.Series(error_reasons, index=processed_indices)
     df_processed['error_reason'] = error_reasons_series.reindex(df_processed.index)
 
@@ -321,45 +349,36 @@ def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_
         df_original_structure[['source_row_number']], left_index=True, right_index=True, how='left'
     )
 
-    # --- ADJUSTED Year Comparison Summary (Clean Data) ---
-    # Compare start year vs end year
+    # --- Year Comparison Summary (Clean Data) ---
     if not clean_rows.empty:
-        # Filter for rows where both dates are valid before comparing years
+        clean_rows['year'] = pd.to_numeric(clean_rows['year'], errors='coerce').fillna(0).astype(int)
         valid_date_rows = clean_rows[clean_rows['event_date_start'].notna() & clean_rows['event_date_end'].notna()]
-
-        start_year_equal_end_year = valid_date_rows[
-            valid_date_rows['event_date_start'].dt.year == valid_date_rows['event_date_end'].dt.year
-        ]
-        start_year_less_than_end_year = valid_date_rows[
-             valid_date_rows['event_date_start'].dt.year < valid_date_rows['event_date_end'].dt.year
-        ]
-
-        count_equal_year = len(start_year_equal_end_year)
-        count_span_year = len(start_year_less_than_end_year) # Events spanning across years
-
+        start_year_equal_end_year = valid_date_rows[valid_date_rows['event_date_start'].dt.year == valid_date_rows['event_date_end'].dt.year]
+        start_year_less_than_end_year = valid_date_rows[valid_date_rows['event_date_start'].dt.year < valid_date_rows['event_date_end'].dt.year]
+        count_equal_year, count_span_year = len(start_year_equal_end_year), len(start_year_less_than_end_year)
         print("\n--- Year Span Summary (Clean Rows Only) ---")
         print(f"Rows where event start/end years are the same: {count_equal_year}")
         print(f"Rows where event spans across calendar years: {count_span_year}")
     else:
-         print("\n--- Year Span Summary (Clean Rows Only) ---")
-         print("No clean rows found.")
+        print("\n--- Year Span Summary (Clean Rows Only) ---")
+        print("No clean rows found.")
 
     # Convert dates to string for output
-    # Handle potential NaT before formatting
     clean_rows['event_date_start'] = clean_rows['event_date_start'].apply(lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else '')
     clean_rows['event_date_end'] = clean_rows['event_date_end'].apply(lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else '')
     erroneous_rows['event_date_start'] = erroneous_rows['event_date_start'].apply(lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else '')
     erroneous_rows['event_date_end'] = erroneous_rows['event_date_end'].apply(lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else '')
-    # Convert derived year to string, handling <NA>
     clean_rows['year'] = clean_rows['year'].astype(str).replace('<NA>', '')
     erroneous_rows['year'] = erroneous_rows['year'].astype(str).replace('<NA>', '')
+    # Convert psgc_code to string, replacing NaN with empty string
+    clean_rows['psgc_code'] = clean_rows['psgc_code'].fillna('').astype(str)
+    erroneous_rows['psgc_code'] = erroneous_rows['psgc_code'].fillna('').astype(str)
 
 
     # --- Define Final Columns ---
-    # Include the derived 'year' column, exclude 'year_original' from final output
     clean_final_columns = [
-        'year', 'event_date_start', 'event_date_end', 'province', 'municipality', 'commodity',
-        'disaster_type_raw', 'disaster_category', 'disaster_name',
+        'year', 'event_date_start', 'event_date_end', 'province', 'municipality', 'psgc_code', # Added psgc_code
+        'commodity', 'disaster_type_raw', 'disaster_category', 'disaster_name',
         'area_partially_damaged_ha', 'area_totally_damaged_ha', 'area_total_affected_ha',
         'farmers_affected', 'volume_loss_mt',
         'losses_php_production_cost', 'losses_php_farm_gate', 'losses_php_grand_total',
@@ -368,10 +387,8 @@ def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_
     existing_clean_cols = [col for col in clean_final_columns if col in clean_rows.columns]
     clean_rows_final = clean_rows[existing_clean_cols]
 
-    # Error columns = clean columns + helpers
     error_final_columns = existing_clean_cols + ['source_row_number', 'error_reason']
     existing_error_cols = [col for col in error_final_columns if col in erroneous_rows.columns]
-    # Reorder erroneous rows columns to match the desired output structure
     erroneous_rows_final = erroneous_rows[existing_error_cols]
 
 
@@ -392,5 +409,5 @@ def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_
     print("\n--- Sanitation Complete ---")
 
 if __name__ == "__main__":
-    sanitize_data(INPUT_FILENAME, TARGET_SHEET_NAME, OUTPUT_DIR, CLEAN_OUTPUT_FILENAME, ERROR_OUTPUT_FILENAME)
+    sanitize_data(INPUT_FILENAME, TARGET_SHEET_NAME, OUTPUT_DIR, CLEAN_OUTPUT_FILENAME, ERROR_OUTPUT_FILENAME, PSGC_LOOKUP_FILENAME)
 

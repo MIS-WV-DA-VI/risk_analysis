@@ -11,6 +11,7 @@ api_output/
 raw_data/processed
 error_input/
 farmer_registry_input/processed
+drrm_datasets/exported
 
 #OS-specific files (macOS)
 

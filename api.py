@@ -11,7 +11,7 @@ import math # For checking NaN
 import numpy as np # Import numpy for replacing infinite values
 import pandas as pd # Ensure pandas is imported
 
-# --- Configuration ---\
+# --- Configuration ---
 BASE_DIR = '.'
 LAKEHOUSE_PATH = os.path.join(BASE_DIR, 'lakehouse_data/lakehouse_disasters')
 # --- Path to Farmer Registry Delta table ---
@@ -22,7 +22,7 @@ AGGREGATED_GEOJSON_FILE = os.path.join(BASE_DIR, 'api_output/api_data.json')
 
 app = FastAPI()
 
-# --- CORS Middleware ---\
+# --- CORS Middleware ---
 origins = ["http://localhost", "http://localhost:8000", "http://127.0.0.1", "http://127.0.0.1:8000", "https://dawvinfosys.test", "https://27.110.161.135", "null"]
 # origins = ["*"] # Allow all for easier local dev, restrict in production
 app.add_middleware(
@@ -91,7 +91,8 @@ async def get_aggregated_geojson_map_data():
 
 
 # --- Endpoint to serve raw/detailed data for charts and table ---
-@app.get("/raw", response_model=dict) # Keep the /raw name
+# <<< MODIFIED: Changed endpoint from /raw to /api/disaster_summary >>>
+@app.get("/api/disaster_summary", response_model=dict)
 async def get_raw_disaster_data(
     province: Optional[str] = Query(None, description="Filter by province (case-insensitive, exact match)"),
     municipality: Optional[str] = Query(None, description="Filter by municipality (case-insensitive, exact match)"),
@@ -108,26 +109,26 @@ async def get_raw_disaster_data(
     Queries the raw disaster data from the Delta Lake table, optionally joins
     with farmer registry data, applies filters, and returns detailed records.
     """
-    print(f"API (/raw): Received request with filters: start={start_date}, end={end_date}, prov={province}, mun={municipality}, cat={disaster_category}, name={disaster_name}, com={commodity}, year={year}, qtr={quarter}")
+    print(f"API (/api/disaster_summary): Received request with filters: start={start_date}, end={end_date}, prov={province}, mun={municipality}, cat={disaster_category}, name={disaster_name}, com={commodity}, year={year}, qtr={quarter}")
     con = None
     safe_lakehouse_path = os.path.normpath(LAKEHOUSE_PATH)
     safe_farmer_registry_path = os.path.normpath(FARMER_REGISTRY_PATH)
     farmer_registry_exists = os.path.exists(safe_farmer_registry_path)
 
     if not os.path.exists(safe_lakehouse_path):
-        print(f"API ERROR (/raw): Main Delta table not found at '{safe_lakehouse_path}'.")
+        print(f"API ERROR (/api/disaster_summary): Main Delta table not found at '{safe_lakehouse_path}'.")
         raise HTTPException(status_code=404, detail=f"Main disaster data source not found. Run data import first.")
     if not farmer_registry_exists:
-        print(f"API WARNING (/raw): Farmer registry table not found at '{safe_farmer_registry_path}'. Proceeding without join.")
+        print(f"API WARNING (/api/disaster_summary): Farmer registry table not found at '{safe_farmer_registry_path}'. Proceeding without join.")
 
     try:
-        print("API (/raw): Connecting to DuckDB (in-memory)...")
+        print("API (/api/disaster_summary): Connecting to DuckDB (in-memory)...")
         con = duckdb.connect(read_only=False)
-        print(f"API (/raw): DuckDB Version: {duckdb.__version__}")
-        print(f"API (/raw): Deltalake Library Version: {deltalake_version}")
+        print(f"API (/api/disaster_summary): DuckDB Version: {duckdb.__version__}")
+        print(f"API (/api/disaster_summary): Deltalake Library Version: {deltalake_version}")
 
         # --- Read Delta Table Directly ---
-        print(f"API (/raw): Reading main Delta table from {safe_lakehouse_path}")
+        print(f"API (/api/disaster_summary): Reading main Delta table from {safe_lakehouse_path}")
         try:
              con.sql("INSTALL delta; LOAD delta;")
              delta_read_function = None
@@ -138,9 +139,9 @@ async def get_raw_disaster_data(
 
              main_table_read_sql = f"SELECT * FROM {delta_read_function}('{safe_lakehouse_path}')"
              con.sql(f"CREATE OR REPLACE TEMPORARY VIEW main_disasters AS {main_table_read_sql};")
-             print("API (/raw): Registered main_disasters view using DuckDB Delta extension.")
+             print("API (/api/disaster_summary): Registered main_disasters view using DuckDB Delta extension.")
         except Exception as delta_ext_err:
-             print(f"API WARNING (/raw): DuckDB Delta extension failed ({delta_ext_err}). Falling back to reading via pandas.")
+             print(f"API WARNING (/api/disaster_summary): DuckDB Delta extension failed ({delta_ext_err}). Falling back to reading via pandas.")
              dt_main = DeltaTable(safe_lakehouse_path)
              df_main = dt_main.to_pandas()
              # Ensure date columns are datetime after pandas load
@@ -151,7 +152,7 @@ async def get_raw_disaster_data(
 
              con.register('main_disasters_df_pandas', df_main)
              con.sql("CREATE OR REPLACE TEMPORARY VIEW main_disasters AS SELECT * FROM main_disasters_df_pandas;")
-             print(f"API (/raw): Registered main_disasters view using pandas fallback ({len(df_main)} rows).")
+             print(f"API (/api/disaster_summary): Registered main_disasters view using pandas fallback ({len(df_main)} rows).")
 
 
         # --- Pre-aggregate Farmer Data if exists ---
@@ -166,18 +167,18 @@ async def get_raw_disaster_data(
         """
 
         if farmer_registry_exists:
-            print(f"API (/raw): Reading farmer registry Delta table from {safe_farmer_registry_path}")
+            print(f"API (/api/disaster_summary): Reading farmer registry Delta table from {safe_farmer_registry_path}")
             try:
                  farmer_table_read_sql = f"SELECT * FROM {delta_read_function}('{safe_farmer_registry_path}')" # Use same function name
                  con.sql(f"CREATE OR REPLACE TEMPORARY VIEW farmer_registry_raw AS {farmer_table_read_sql};")
-                 print("API (/raw): Registered farmer_registry_raw view using DuckDB Delta extension.")
+                 print("API (/api/disaster_summary): Registered farmer_registry_raw view using DuckDB Delta extension.")
             except Exception as delta_ext_err_farmer:
-                 print(f"API WARNING (/raw): DuckDB Delta extension failed for farmer data ({delta_ext_err_farmer}). Falling back via pandas.")
+                 print(f"API WARNING (/api/disaster_summary): DuckDB Delta extension failed for farmer data ({delta_ext_err_farmer}). Falling back via pandas.")
                  dt_farmer = DeltaTable(safe_farmer_registry_path)
                  df_farmer = dt_farmer.to_pandas()
                  con.register('farmer_registry_df_pandas', df_farmer)
                  con.sql("CREATE OR REPLACE TEMPORARY VIEW farmer_registry_raw AS SELECT * FROM farmer_registry_df_pandas;")
-                 print(f"API (/raw): Registered farmer_registry_raw view using pandas fallback ({len(df_farmer)} rows).")
+                 print(f"API (/api/disaster_summary): Registered farmer_registry_raw view using pandas fallback ({len(df_farmer)} rows).")
 
             # Aggregate farmer data
             # Ensure types match default_farmer_select and calculations
@@ -203,7 +204,7 @@ async def get_raw_disaster_data(
                 END AS percentage_farmers_affected
             """
             default_farmer_select = "" # Clear default
-            print("API (/raw): Created farmer_summary aggregation view.")
+            print("API (/api/disaster_summary): Created farmer_summary aggregation view.")
 
 
         # --- Dynamically Build WHERE Clause (Applies to disaster table 'd') ---
@@ -264,18 +265,18 @@ async def get_raw_disaster_data(
         """
         params['limit'] = limit if limit > 0 else 10000 # Use the provided limit
 
-        print(f"API (/raw): Executing query: {query}")
-        print(f"API (/raw): With parameters: {params}")
+        print(f"API (/api/disaster_summary): Executing query: {query}")
+        print(f"API (/api/disaster_summary): With parameters: {params}")
 
         # Execute query with parameters
         result_df = con.execute(query, params).fetchdf()
-        print(f"API (/raw): Query returned {len(result_df)} rows.")
+        print(f"API (/api/disaster_summary): Query returned {len(result_df)} rows.")
 
         # Convert DataFrame to list of dictionaries and clean for JSON
         data = result_df.to_dict(orient='records')
         cleaned_data = clean_data_for_json(data)
 
-        print("API (/raw): Returning cleaned data.")
+        print("API (/api/disaster_summary): Returning cleaned data.")
         # Return data in the desired format {status, count, data}
         return {"status": "success", "count": len(cleaned_data), "data": cleaned_data}
 
@@ -283,19 +284,19 @@ async def get_raw_disaster_data(
         raise http_exc # Re-raise FastAPI specific exceptions
     except duckdb.Error as db_err: # Catch DuckDB specific errors
         error_message = f"Database query error: {str(db_err)}"
-        print(f"API ERROR (/raw): {error_message}")
+        print(f"API ERROR (/api/disaster_summary): {error_message}")
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail="Error executing database query. Check server logs.")
     except Exception as e:
         error_message = f"An error occurred during raw data query execution: {str(e)}"
-        print(f"API ERROR (/raw): {error_message}")
+        print(f"API ERROR (/api/disaster_summary): {error_message}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Could not retrieve raw data. Please check server logs or query parameters.")
     finally:
         if con:
             con.close()
-            print("API (/raw): Closed DuckDB connection.")
+            print("API (/api/disaster_summary): Closed DuckDB connection.")
 
 # --- Root Endpoint ---
 @app.get("/")

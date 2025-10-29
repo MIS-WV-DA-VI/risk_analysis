@@ -231,9 +231,9 @@
 
         // --- Constants and Globals ---
         // <<< MODIFIED: API endpoint for charts/table (matches new api.py) >>>
-        const baseApiUrl = 'http://localhost:8000/api/disaster_summary';
+        const chartApiUrl = 'http://localhost:8000/api/raw'; // Use a relative path
         // <<< ADDED: API endpoint for map data (matches new api.py) >>>
-        const mapApiUrl = 'http://localhost:8000/query';
+        const mapApiUrl = 'http://localhost:8000/query'; // Use a relative path
 
         const loadingDiv = document.getElementById('loading');
         const errorDiv = document.getElementById('error');
@@ -358,8 +358,8 @@
             }
         }
 
-        // --- <<< ADDED: Function to Initialize and Load Map Data >>> ---
-        async function initializeMap() {
+        // --- <<< ADDED: Function to Initialize Map (without data) >>> ---
+        function initializeMap() {
             try {
                 // 1. Initialize the map
                 mapInstance = L.map('map').setView([11.1, 122.5], 8); // Centered on Western Visayas
@@ -367,22 +367,7 @@
                     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                 }).addTo(mapInstance);
 
-                // 2. Fetch GeoJSON data from /api/query
-                console.log("Fetching map data from:", mapApiUrl);
-                const response = await fetch(mapApiUrl);
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-                const geojsonData = await response.json();
-                console.log("Map data fetched:", geojsonData.features.length, "features");
-
-                // 3. Add GeoJSON layer to map
-                if (geojsonLayer) mapInstance.removeLayer(geojsonLayer);
-                geojsonLayer = L.geoJSON(geojsonData, {
-                    style: styleMapFeature,
-                    onEachFeature: onEachMapFeature
-                }).addTo(mapInstance);
-
-                // 4. Add Legend
-                if (mapLegend) mapInstance.removeControl(mapLegend);
+                // 2. Add Legend
                 mapLegend = L.control({position: 'bottomright'});
                 mapLegend.onAdd = function (map) {
                     const div = L.DomUtil.create('div', 'info legend');
@@ -398,8 +383,43 @@
                 mapLegend.addTo(mapInstance);
 
             } catch (error) {
+                 console.error('Error initializing map:', error);
+                 document.getElementById('map').innerHTML = `<div class="p-4 text-center text-red-500">Error initializing map: ${error.message}</div>`;
+            }
+        }
+
+        // --- <<< ADDED: Function to Update Map with Filtered Data >>> ---
+        async function updateMap(params) {
+            console.log("Updating map data...");
+            try {
+                // 1. Fetch filtered GeoJSON data from /api/query
+                const filteredMapUrl = `${mapApiUrl}?${params.toString()}`;
+                console.log("Fetching map data from:", filteredMapUrl);
+                
+                const response = await fetch(filteredMapUrl);
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const geojsonData = await response.json();
+                console.log("Filtered map data fetched:", geojsonData.features.length, "features");
+
+                // 2. Clear old layer and add new one
+                if (geojsonLayer) {
+                    mapInstance.removeLayer(geojsonLayer);
+                }
+                
+                geojsonLayer = L.geoJSON(geojsonData, {
+                    style: styleMapFeature,
+                    onEachFeature: onEachMapFeature
+                }).addTo(mapInstance);
+
+                // 3. (Optional) Fly to new bounds if filtered
+                // This is complex, so we'll skip for now and keep the map centered.
+                // mapInstance.fitBounds(geojsonLayer.getBounds());
+
+            } catch (error) {
                  console.error('Error fetching data for map:', error);
-                 document.getElementById('map').innerHTML = `<div class="p-4 text-center text-red-500">Error loading map: ${error.message}</div>`;
+                 // Don't overwrite the whole map, just show an error
+                 errorDiv.textContent = `Error loading map data: ${error.message}`;
+                 errorDiv.classList.remove('hidden');
             }
         }
 
@@ -409,8 +429,8 @@
             console.log("Populating filters...");
             try {
                 // Fetch unfiltered data to get all possible provinces/categories
-                // <<< MODIFIED: Simple fetch without auth headers >>>
-                const response = await fetch(`${baseApiUrl}?limit=5000`);
+                // <<< MODIFIED: Use chartApiUrl >>>
+                const response = await fetch(`${chartApiUrl}?limit=5000`);
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
                 const result = await response.json();
                 if (result.status === 'success' && result.data) {
@@ -541,7 +561,7 @@
         endDateFilter.addEventListener('input', () => handleTimeFilterChange('dateRange'));
 
 
-        // --- Fetch Data Based on Filters and Display ---
+        // --- <<< MODIFIED: Main function to fetch all data >>> ---
         async function fetchDataAndDisplay() {
             loadingDiv.style.display = 'block';
             errorDiv.classList.add('hidden');
@@ -573,14 +593,27 @@
             if (year) params.append('year', year); // <<< ADDED
             if (startDate) params.append('start_date', startDate);
             if (endDate) params.append('end_date', endDate);
-            params.append('limit', 5000); // Fetch more data for better chart aggregation
+            
+            // --- <<< NEW: Fetch Map Data and Chart Data in Parallel >>> ---
+            // 1. Update Map Data (pass a copy of params)
+            const mapParams = new URLSearchParams(params);
+            // The map doesn't need a high limit, it's aggregated
+            updateMap(mapParams); 
 
-            const filteredApiUrl = `${baseApiUrl}?${params.toString()}`;
-            console.log("Fetching data from:", filteredApiUrl);
+            // 2. Fetch Chart & Table Data (pass a copy of params)
+            const chartParams = new URLSearchParams(params);
+            chartParams.append('limit', 5000); // High limit for charts/table
+            fetchChartData(chartParams);
+        }
+
+        // --- <<< NEW: Function dedicated to fetching chart/table data >>> ---
+        async function fetchChartData(params) {
+            const filteredChartUrl = `${chartApiUrl}?${params.toString()}`;
+            console.log("Fetching chart data from:", filteredChartUrl);
 
             try {
                 // <<< MODIFIED: Simple fetch without auth headers >>>
-                const response = await fetch(filteredApiUrl);
+                const response = await fetch(filteredChartUrl);
                 if (!response.ok) {
                     let errorMsg = `HTTP error! status: ${response.status}`;
                     try { const errorData = await response.json(); if (errorData && errorData.message) errorMsg += ` - ${errorData.message}`; } catch (e) {}
@@ -590,11 +623,15 @@
 
                 if (result.status === 'success' && result.data && result.data.length > 0) {
                     const data = result.data;
-                    console.log(`Filtered data fetched: ${data.length} items`, data.slice(0, 5)); // Log first 5 items
+                    console.log(`Filtered chart data fetched: ${data.length} items`, data.slice(0, 5)); // Log first 5 items
 
                     // --- 1. Prepare Data for Bar Chart ---
                     let barGroupByKey = 'province';
                     let barChartTitle = 'Total Disaster Losses PHP Grand Total by Province';
+                    const province = params.get('province'); // Get filters from params
+                    const municipality = params.get('municipality');
+                    const category = params.get('disaster_category');
+
                     if (province && !municipality) { barGroupByKey = 'municipality'; barChartTitle = `Losses by Municipality in ${province}`; }
                     else if (province && municipality) { barGroupByKey = 'disaster_category'; barChartTitle = `Losses by Category in ${municipality}`; }
                     else if (!province && category) { barGroupByKey = 'province'; barChartTitle = `Losses from ${category} by Province`; }
@@ -790,9 +827,9 @@
                      throw new Error(result.message || 'API returned success status but no valid data.');
                 }
             } catch (error) {
-                console.error('Error fetching or processing data:', error);
+                console.error('Error fetching or processing chart data:', error);
                 loadingDiv.style.display = 'none';
-                errorDiv.textContent = `Error loading data: ${error.message}. Is the API server running and responding correctly?`;
+                errorDiv.textContent = `Error loading chart/table data: ${error.message}. Is the API server running and responding correctly?`;
                 errorDiv.classList.remove('hidden');
             }
         }
@@ -823,9 +860,9 @@
         // --- Initial Load ---
         async function initializeDashboard() {
             // <<< MODIFIED: Initialize map, then filters, then charts/table >>>
-            await initializeMap(); 
+            initializeMap(); // Initialize the empty map
             await populateFilters();
-            await fetchDataAndDisplay();
+            await fetchDataAndDisplay(); // Fetch data for both map and charts
         }
 
         initializeDashboard();

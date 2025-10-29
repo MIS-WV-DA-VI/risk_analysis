@@ -12,7 +12,7 @@ CLEAN_OUTPUT_FILENAME = 'clean_data.csv'
 ERROR_OUTPUT_FILENAME = 'erroneous_rows.csv'
 PSGC_LOOKUP_FILENAME = 'psgc_lookup.csv' # PSGC Lookup file
 
-# This mapping is updated to handle the column names in your consolidated file.
+# This mapping is updated based on sanitizer_test.py
 COLUMN_MAPPING = {
     'YEAR (DATE OF OCCURENCE)': 'year_original', # Rename original year column
     'ACTUAL DATE OF OCCURENCE': 'date_range_str',
@@ -30,6 +30,17 @@ COLUMN_MAPPING = {
     'Total Value (Based on Cost of Production / Inputs)': 'losses_php_production_cost',
     'Total Value - Based on Farm Gate Price': 'losses_php_farm_gate',
     'Volume (MT) - Based on Farm Gate Price ': 'volume_loss_mt' # Note the trailing space
+}
+
+# --- Specific Name Replacements ---
+# Applied AFTER initial load/rename but BEFORE uppercasing everything
+# Keys should ideally be uppercase to catch variations
+municipality_replacements = {
+    'SAPIAN': 'SAPI-AN',
+    'DUENAS': 'DUEÑAS', # Need to handle potential encoding if saving CSV later
+    'CADIZ': 'CITY OF CADIZ',
+    'DON SALVADOR BENEDICTO': 'SALVADOR BENEDICTO',
+    # Add more known variations here if needed
 }
 
 
@@ -53,9 +64,15 @@ def parse_date_range_smart(date_str, year_original_val):
     if isinstance(date_str, datetime):
         date = date_str.date()
         remark = "Parsed from a native Excel date format."
-        year_to_use = date.year if pd.isna(year_original_val) else int(year_original_val)
-        if pd.notna(year_original_val) and abs(date.year - year_to_use) > 1:
-             return None, None, f"Year in Excel date ({date.year}) differs significantly from Year column ({year_to_use})."
+        year_to_use = date.year # Use the date's year directly
+        # Perform validation against original year if provided
+        if pd.notna(year_original_val):
+            try:
+                original_year_int = int(year_original_val)
+                if abs(date.year - original_year_int) > 1:
+                    return None, None, f"Year in Excel date ({date.year}) differs significantly from Year column ({original_year_int})."
+            except (ValueError, TypeError):
+                 return None, None, "Invalid Original Year column value for comparison"
         return date, date, remark
 
     date_str = str(date_str).strip()
@@ -64,7 +81,7 @@ def parse_date_range_smart(date_str, year_original_val):
         try:
             fallback_year = int(year_original_val)
         except (ValueError, TypeError):
-             return None, None, "Invalid Year column value"
+             return None, None, "Invalid Original Year column value"
 
     try:
         # Pattern 1 & 4 Combined: "Month Day, Year" OR "Month Day-Day, Year"
@@ -122,7 +139,12 @@ def parse_date_range_smart(date_str, year_original_val):
 
         # --- Final fallback ---
         if fallback_year is None:
-             return None, None, "Missing Year column value needed for ambiguous date string."
+             year_match_in_str = re.search(r'(\d{4})', date_str)
+             if year_match_in_str:
+                  fallback_year = int(year_match_in_str.group(1))
+             else:
+                  return None, None, "Missing Year column value and could not extract year from date string."
+
         parts = re.split(r'\s*-\s*|\s+to\s+', date_str, flags=re.IGNORECASE)
         start_str, end_str = parts[0], parts[-1]
         remark_parts = []
@@ -232,9 +254,28 @@ def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_
     df_original_structure = df.copy()
     df_original_structure['source_row_number'] = df.index + 3
 
+    # Use original 'year' column name from mapping for initial processing
+    original_year_col_name = 'YEAR (DATE OF OCCURENCE)' # Get original name from source
     df_processed = df.rename(columns=lambda c: c.strip())
+    # Keep original year column temporarily with a distinct name
+    df_processed = df_processed.rename(columns={original_year_col_name: 'year_original'})
+    # Apply the rest of the mapping
     df_processed = df_processed.rename(columns=COLUMN_MAPPING)
+
+
     df_processed['year_original'] = pd.to_numeric(df_processed.get('year_original'), errors='coerce')
+
+    # --- NEW: Apply Specific Municipality Name Replacements ---
+    # Apply replacements on the potentially mixed-case data first, then uppercase
+    if 'municipality' in df_processed.columns:
+        print("Applying specific municipality name replacements...")
+        # Apply replacements case-insensitively by temporarily uppercasing the keys/values for matching
+        temp_mun_upper = df_processed['municipality'].fillna('').astype(str).str.upper()
+        for original, corrected in municipality_replacements.items():
+            # Apply correction where the uppercased version matches the key
+            df_processed.loc[temp_mun_upper == original.upper(), 'municipality'] = corrected
+        print("Replacements applied.")
+
 
     # --- Uppercase Conversion (BEFORE PSGC Lookup) ---
     string_cols_to_upper = [
@@ -243,24 +284,31 @@ def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_
     ]
     for col in string_cols_to_upper:
         if col in df_processed.columns:
-            # Keep NaN as NaN for now, convert case only on actual strings
-            df_processed[col] = df_processed[col].astype(str).str.upper().str.strip()
-            # Replace empty strings potentially created from NaN conversion back to None/NaN
-            df_processed[col] = df_processed[col].replace({'^$': None, 'NAN': None}, regex=True)
+            # Convert to string, replacing actual NaN values before upper(), then strip
+            # Convert NaN to empty string temporarily for upper(), then back to None
+            df_processed[col] = df_processed[col].fillna('').astype(str).str.upper().str.strip()
+            df_processed[col] = df_processed[col].replace({'^$': None, 'NAN': None}, regex=True) # Use None for missing
 
 
     # --- PSGC Lookup/Merge ---
     if psgc_lookup_df is not None:
          print("Performing PSGC lookup...")
          if 'province' in df_processed.columns and 'municipality' in df_processed.columns:
+              # Ensure join keys are strings for merge robustness, handle None
+              df_processed['province_join_key'] = df_processed['province'].fillna('').astype(str)
+              df_processed['municipality_join_key'] = df_processed['municipality'].fillna('').astype(str)
+              psgc_lookup_df['province_name'] = psgc_lookup_df['province_name'].astype(str)
+              psgc_lookup_df['municipality_name'] = psgc_lookup_df['municipality_name'].astype(str)
+
               df_processed = pd.merge(
                    df_processed,
                    psgc_lookup_df,
-                   left_on=['province', 'municipality'],
+                   left_on=['province_join_key', 'municipality_join_key'],
                    right_on=['province_name', 'municipality_name'],
                    how='left'
               )
-              df_processed = df_processed.drop(columns=['province_name', 'municipality_name'], errors='ignore')
+              # Clean up join keys and redundant columns
+              df_processed = df_processed.drop(columns=['province_name', 'municipality_name', 'province_join_key', 'municipality_join_key'], errors='ignore')
               print("PSGC lookup complete.")
          else:
               print("Warning: 'province' or 'municipality' column not found after renaming. Skipping PSGC lookup.")
@@ -268,17 +316,22 @@ def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_
     else:
          df_processed['psgc_code'] = None # Add empty column if lookup file wasn't loaded
 
-    numeric_cols = list(set(COLUMN_MAPPING.values()) - {'year_original', 'date_range_str', 'province', 'municipality', 'commodity', 'disaster_type_raw', 'disaster_category', 'disaster_name'}) \
-                 + ['year']
+    # Clean numeric columns (exclude original year)
+    numeric_cols = [
+        'area_totally_damaged_ha', 'area_partially_damaged_ha', 'area_total_affected_ha',
+        'farmers_affected', 'losses_php_grand_total', 'losses_php_production_cost',
+        'losses_php_farm_gate', 'volume_loss_mt'
+    ]
     for col in numeric_cols:
-        if col in df_processed.columns and col != 'year':
+        if col in df_processed.columns:
             df_processed[col] = clean_numeric_column(df_processed[col])
+
 
     # Clean commodity codes AFTER converting to upper
     if 'commodity' in df_processed.columns:
         df_processed['commodity'] = df_processed['commodity'].astype(str).str.replace(r'^\d+\s*-\s*', '', regex=True).str.strip()
-        # Handle potential empty strings after stripping code
-        df_processed['commodity'] = df_processed['commodity'].replace({'^$': None}, regex=True)
+        # Handle potential empty strings after stripping code, keep as None
+        df_processed['commodity'] = df_processed['commodity'].replace({'^$': None, 'NAN': None}, regex=True)
 
 
     parsed_dates = df_processed.apply(lambda row: parse_date_range_smart(row.get('date_range_str'), row.get('year_original')), axis=1)
@@ -286,8 +339,10 @@ def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_
     df_processed['event_date_start'] = pd.to_datetime(df_processed['temp_start'], errors='coerce')
     df_processed['event_date_end'] = pd.to_datetime(df_processed['temp_end'], errors='coerce')
     df_processed = df_processed.drop(columns=['temp_start', 'temp_end'])
+
+    # Derive 'year' from event_date_start AFTER parsing
     df_processed['year'] = df_processed['event_date_start'].dt.year
-    df_processed['year'] = df_processed['year'].astype('Int64')
+    df_processed['year'] = df_processed['year'].astype('Int64') # Use nullable integer
 
     # --- Validation ---
     error_reasons = []
@@ -296,20 +351,16 @@ def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_
         reasons = []
         year_original_val, start_date, end_date = row.get('year_original'), row.get('event_date_start'), row.get('event_date_end')
         psgc_val = row.get('psgc_code')
-        province_val = row.get('province') # Get value after potential uppercase
-        municipality_val = row.get('municipality') # Get value after potential uppercase
+        province_val = row.get('province')
+        municipality_val = row.get('municipality')
 
         # Basic Validation
-        # Check for NaN or empty string after stripping
-        if pd.isna(province_val) or str(province_val).strip() == '':
-             reasons.append("Missing essential field (province).")
-        if pd.isna(municipality_val) or str(municipality_val).strip() == '':
-             reasons.append("Missing essential field (municipality).")
-        # Check original year validity
+        # Check for None or empty string after potential cleaning
+        if pd.isna(province_val) or str(province_val).strip() == '': reasons.append("Missing essential field (province).")
+        if pd.isna(municipality_val) or str(municipality_val).strip() == '': reasons.append("Missing essential field (municipality).")
         if pd.isna(year_original_val):
             original_year_str = df_original_structure.loc[index, 'YEAR (DATE OF OCCURENCE)']
             reasons.append(f"Original Year column is not a valid number: '{original_year_str}'")
-        # Check date parsing validity
         if pd.isna(start_date):
             original_date_str = df_original_structure.loc[index, 'ACTUAL DATE OF OCCURENCE']
             original_date_str = original_date_str if isinstance(original_date_str, (str, int, float)) else str(original_date_str)
@@ -321,11 +372,13 @@ def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_
 
         # PSGC Validation
         if pd.isna(psgc_val) and psgc_lookup_df is not None:
-             # Avoid double-flagging if province/municipality was already missing
              if not ("Missing essential field" in "; ".join(reasons)):
                    prov_disp = province_val if pd.notna(province_val) else "MISSING"
                    mun_disp = municipality_val if pd.notna(municipality_val) else "MISSING"
-                   reasons.append(f"PSGC code not found for province/municipality: '{prov_disp}' / '{mun_disp}'.")
+                   # Only add error if the fields used for lookup were not missing
+                   if prov_disp != "MISSING" and mun_disp != "MISSING":
+                       reasons.append(f"PSGC code not found for province/municipality: '{prov_disp}' / '{mun_disp}'.")
+
 
         # Date Logic Validation
         if pd.notna(start_date) and pd.notna(end_date):
@@ -351,7 +404,8 @@ def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_
 
     # --- Year Comparison Summary (Clean Data) ---
     if not clean_rows.empty:
-        clean_rows['year'] = pd.to_numeric(clean_rows['year'], errors='coerce').fillna(0).astype(int)
+        # Use the derived 'year' column for summary
+        clean_rows['year_int'] = pd.to_numeric(clean_rows['year'], errors='coerce').fillna(0).astype(int)
         valid_date_rows = clean_rows[clean_rows['event_date_start'].notna() & clean_rows['event_date_end'].notna()]
         start_year_equal_end_year = valid_date_rows[valid_date_rows['event_date_start'].dt.year == valid_date_rows['event_date_end'].dt.year]
         start_year_less_than_end_year = valid_date_rows[valid_date_rows['event_date_start'].dt.year < valid_date_rows['event_date_end'].dt.year]
@@ -368,16 +422,17 @@ def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_
     clean_rows['event_date_end'] = clean_rows['event_date_end'].apply(lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else '')
     erroneous_rows['event_date_start'] = erroneous_rows['event_date_start'].apply(lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else '')
     erroneous_rows['event_date_end'] = erroneous_rows['event_date_end'].apply(lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else '')
-    clean_rows['year'] = clean_rows['year'].astype(str).replace('<NA>', '')
+    clean_rows['year'] = clean_rows['year'].astype(str).replace('<NA>', '') # Handle potential Nullable Int conversion
     erroneous_rows['year'] = erroneous_rows['year'].astype(str).replace('<NA>', '')
-    # Convert psgc_code to string, replacing NaN with empty string
+    # Convert psgc_code to string, replacing NaN/None with empty string
     clean_rows['psgc_code'] = clean_rows['psgc_code'].fillna('').astype(str)
     erroneous_rows['psgc_code'] = erroneous_rows['psgc_code'].fillna('').astype(str)
 
 
     # --- Define Final Columns ---
+    # Include psgc_code, derived year, exclude year_original
     clean_final_columns = [
-        'year', 'event_date_start', 'event_date_end', 'province', 'municipality', 'psgc_code', # Added psgc_code
+        'year', 'event_date_start', 'event_date_end', 'province', 'municipality', 'psgc_code',
         'commodity', 'disaster_type_raw', 'disaster_category', 'disaster_name',
         'area_partially_damaged_ha', 'area_totally_damaged_ha', 'area_total_affected_ha',
         'farmers_affected', 'volume_loss_mt',
@@ -389,6 +444,7 @@ def sanitize_data(input_filename, sheet_name, output_dir, clean_filename, error_
 
     error_final_columns = existing_clean_cols + ['source_row_number', 'error_reason']
     existing_error_cols = [col for col in error_final_columns if col in erroneous_rows.columns]
+    # Reorder erroneous rows columns to match the desired output structure
     erroneous_rows_final = erroneous_rows[existing_error_cols]
 
 

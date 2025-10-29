@@ -41,7 +41,8 @@ def clean_data_for_json(data):
         cleaned_row = {}
         for key, value in row_dict.items():
             if isinstance(value, (np.int64, np.int32)):
-                cleaned_row[key] = int(value)
+                 # Handle potential Pandas nullable integer <NA> which becomes pd.NA
+                 cleaned_row[key] = int(value) if pd.notna(value) else None
             elif isinstance(value, (np.float64, np.float32)):
                 if np.isnan(value) or np.isinf(value):
                     cleaned_row[key] = None # Replace NaN/Inf with None
@@ -52,9 +53,9 @@ def clean_data_for_json(data):
                     else:
                          cleaned_row[key] = float(value)
             elif isinstance(value, (datetime.date, datetime.datetime, pd.Timestamp)):
-                 # Format dates as YYYY-MM-DD strings
-                 cleaned_row[key] = value.strftime('%Y-%m-%d')
-            elif pd.isna(value): # Catch pandas NA types (like NaT)
+                 # Format dates as YYYY-MM-DD strings, handle NaT
+                 cleaned_row[key] = value.strftime('%Y-%m-%d') if pd.notna(value) else None
+            elif pd.isna(value): # Catch remaining pandas NA types (like NaT, None)
                  cleaned_row[key] = None
             else:
                 cleaned_row[key] = value
@@ -90,18 +91,18 @@ async def get_aggregated_geojson_map_data():
 
 
 # --- Endpoint to serve raw/detailed data for charts and table ---
-@app.get("/raw", response_model=dict) # Renamed from /api/disaster_summary
+@app.get("/raw", response_model=dict) # Keep the /raw name
 async def get_raw_disaster_data(
     province: Optional[str] = Query(None, description="Filter by province (case-insensitive, exact match)"),
     municipality: Optional[str] = Query(None, description="Filter by municipality (case-insensitive, exact match)"),
-    disaster_category: Optional[str] = Query(None, description="Filter by disaster category (case-insensitive, exact match)"), # Kept category filter
-    disaster_name: Optional[str] = Query(None, description="Filter by specific disaster name"), # Added disaster_name
-    commodity: Optional[str] = Query(None, description="Filter by commodity name"), # Added commodity
+    disaster_category: Optional[str] = Query(None, description="Filter by disaster category (case-insensitive, exact match)"),
+    disaster_name: Optional[str] = Query(None, description="Filter by specific disaster name"),
+    commodity: Optional[str] = Query(None, description="Filter by commodity name"),
     quarter: Optional[int] = Query(None, description="Filter by quarter (1-4)", ge=1, le=4),
     year: Optional[int] = Query(None, description="Filter by year (e.g., 2023)", ge=1900, le=2100),
-    start_date: Optional[datetime.date] = Query(None, description="Filter by start date (YYYY-MM-DD) - inclusive"), # Changed type hint
-    end_date: Optional[datetime.date] = Query(None, description="Filter by end date (YYYY-MM-DD) - inclusive"), # Changed type hint
-    limit: int = Query(1000, description="Maximum number of records to return", gt=0, le=10000) # Increased limit slightly
+    start_date: Optional[datetime.date] = Query(None, description="Filter by start date (YYYY-MM-DD) - inclusive"),
+    end_date: Optional[datetime.date] = Query(None, description="Filter by end date (YYYY-MM-DD) - inclusive"),
+    limit: int = Query(10000, description="Maximum number of records to return", gt=0, le=50000) # Increased limit
 ):
     """
     Queries the raw disaster data from the Delta Lake table, optionally joins
@@ -123,17 +124,19 @@ async def get_raw_disaster_data(
         print("API (/raw): Connecting to DuckDB (in-memory)...")
         con = duckdb.connect(read_only=False)
         print(f"API (/raw): DuckDB Version: {duckdb.__version__}")
-        print(f"API (/raw): Deltalake Library Version: {deltalake_version}") # Use imported version
+        print(f"API (/raw): Deltalake Library Version: {deltalake_version}")
 
-        # --- Read Delta Table Directly (More Robust) ---
+        # --- Read Delta Table Directly ---
         print(f"API (/raw): Reading main Delta table from {safe_lakehouse_path}")
-        # Use DuckDB's native Delta reading if available and working, otherwise fallback to pandas
-        # This requires the DuckDB delta extension.
         try:
              con.sql("INSTALL delta; LOAD delta;")
-             # Check for function existence might be needed depending on DuckDB version
-             # For now, assume read_delta_table or similar exists if extension loads
-             main_table_read_sql = f"SELECT * FROM read_delta('{safe_lakehouse_path}')"
+             delta_read_function = None
+             functions = con.sql("SELECT function_name FROM duckdb_functions() WHERE function_name IN ('read_delta', 'delta_scan')").df()
+             if 'read_delta' in functions['function_name'].values: delta_read_function = 'read_delta'
+             elif 'delta_scan' in functions['function_name'].values: delta_read_function = 'delta_scan'
+             else: raise duckdb.CatalogException("Neither 'read_delta' nor 'delta_scan' found.")
+
+             main_table_read_sql = f"SELECT * FROM {delta_read_function}('{safe_lakehouse_path}')"
              con.sql(f"CREATE OR REPLACE TEMPORARY VIEW main_disasters AS {main_table_read_sql};")
              print("API (/raw): Registered main_disasters view using DuckDB Delta extension.")
         except Exception as delta_ext_err:
@@ -143,6 +146,9 @@ async def get_raw_disaster_data(
              # Ensure date columns are datetime after pandas load
              if 'event_date_start' in df_main.columns: df_main['event_date_start'] = pd.to_datetime(df_main['event_date_start'], errors='coerce')
              if 'event_date_end' in df_main.columns: df_main['event_date_end'] = pd.to_datetime(df_main['event_date_end'], errors='coerce')
+             # Convert year column explicitly
+             if 'year' in df_main.columns: df_main['year'] = pd.to_numeric(df_main['year'], errors='coerce').astype('Int64')
+
              con.register('main_disasters_df_pandas', df_main)
              con.sql("CREATE OR REPLACE TEMPORARY VIEW main_disasters AS SELECT * FROM main_disasters_df_pandas;")
              print(f"API (/raw): Registered main_disasters view using pandas fallback ({len(df_main)} rows).")
@@ -152,17 +158,17 @@ async def get_raw_disaster_data(
         farmer_join_view = None
         select_farmer_cols = ""
         select_calculated_cols = ""
+        # Use CAST for explicit NULL types matching the farmer_summary view schema
         default_farmer_select = """,
             CAST(NULL AS INTEGER) AS registered_rice_farmers,
             CAST(NULL AS DOUBLE) AS total_declared_rice_area_ha,
             CAST(NULL AS DOUBLE) AS percentage_farmers_affected
-        """ # Use CAST for explicit NULL types
+        """
 
         if farmer_registry_exists:
             print(f"API (/raw): Reading farmer registry Delta table from {safe_farmer_registry_path}")
             try:
-                # Use DuckDB Delta extension if possible
-                 farmer_table_read_sql = f"SELECT * FROM read_delta('{safe_farmer_registry_path}')"
+                 farmer_table_read_sql = f"SELECT * FROM {delta_read_function}('{safe_farmer_registry_path}')" # Use same function name
                  con.sql(f"CREATE OR REPLACE TEMPORARY VIEW farmer_registry_raw AS {farmer_table_read_sql};")
                  print("API (/raw): Registered farmer_registry_raw view using DuckDB Delta extension.")
             except Exception as delta_ext_err_farmer:
@@ -174,13 +180,14 @@ async def get_raw_disaster_data(
                  print(f"API (/raw): Registered farmer_registry_raw view using pandas fallback ({len(df_farmer)} rows).")
 
             # Aggregate farmer data
+            # Ensure types match default_farmer_select and calculations
             con.sql("""
                 CREATE OR REPLACE TEMPORARY VIEW farmer_summary AS
                 SELECT
                     province,
                     municipality,
-                    CAST(SUM(registered_rice_farmers) AS INTEGER) AS registered_rice_farmers,
-                    SUM(total_declared_rice_area_ha) AS total_declared_rice_area_ha
+                    CAST(COALESCE(SUM(registered_rice_farmers), 0) AS INTEGER) AS registered_rice_farmers,
+                    COALESCE(SUM(total_declared_rice_area_ha), 0.0) AS total_declared_rice_area_ha
                 FROM farmer_registry_raw
                 GROUP BY province, municipality;
             """)
@@ -208,35 +215,30 @@ async def get_raw_disaster_data(
         if municipality:
             where_clauses.append("UPPER(d.municipality) = UPPER($municipality)")
             params['municipality'] = municipality
-        if disaster_category: # Keep category filter if needed
+        if disaster_category:
             where_clauses.append("UPPER(d.disaster_category) = UPPER($disaster_category)")
             params['disaster_category'] = disaster_category
-        if disaster_name: # Filter by specific name
+        if disaster_name:
              where_clauses.append("UPPER(d.disaster_name) = UPPER($disaster_name)")
              params['disaster_name'] = disaster_name
-        if commodity: # Filter by commodity
+        if commodity:
              where_clauses.append("UPPER(d.commodity) = UPPER($commodity)")
              params['commodity'] = commodity
         if start_date:
-            # Use event_date_end >= start_date to catch events overlapping the start
-            where_clauses.append("d.event_date_end >= $start_date")
+            # Cast column to DATE for comparison
+            where_clauses.append("CAST(d.event_date_end AS DATE) >= $start_date")
             params['start_date'] = start_date
         if end_date:
-            # Use event_date_start <= end_date to catch events overlapping the end
-            where_clauses.append("d.event_date_start <= $end_date")
+            # Cast column to DATE for comparison
+            where_clauses.append("CAST(d.event_date_start AS DATE) <= $end_date")
             params['end_date'] = end_date
         if quarter:
-            # Ensure event_date_start is treated as DATE for quarter function
             where_clauses.append("quarter(CAST(d.event_date_start AS DATE)) = $quarter")
             params['quarter'] = quarter
         if year:
-            # Ensure event_date_start is treated as DATE for year function
-            # Or use the dedicated 'year' column if it exists and is reliable
-            if 'year' in con.sql("DESCRIBE main_disasters;").df()['column_name'].values:
-                 where_clauses.append("d.year = $year") # Use dedicated year column
-            else:
-                 where_clauses.append("year(CAST(d.event_date_start AS DATE)) = $year") # Fallback to extracting from date
-            params['year'] = year
+             # Use the dedicated 'year' column generated by sanitizer.py
+             where_clauses.append("d.year = $year")
+             params['year'] = year
 
         where_sql = ""
         if where_clauses:
@@ -260,7 +262,7 @@ async def get_raw_disaster_data(
         ORDER BY d.event_date_start DESC, d.province, d.municipality -- Use alias 'd'
         LIMIT $limit
         """
-        params['limit'] = limit if limit > 0 else 1000 # Keep limit reasonable
+        params['limit'] = limit if limit > 0 else 10000 # Use the provided limit
 
         print(f"API (/raw): Executing query: {query}")
         print(f"API (/raw): With parameters: {params}")

@@ -20,28 +20,36 @@
     <script src="https://cdn.jsdelivr.net/npm/dayjs@1/dayjs.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/utc.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/customParseFormat.js"></script>
-    <!-- <<< ADDED: Dayjs plugin to get year/quarter >>> -->
     <script src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/quarterOfYear.js"></script>
     <style>
         body {
             font-family: 'Inter', sans-serif;
         }
-        /* <<< ADDED: Style for the Leaflet Map >>> */
+        /* <<< MODIFIED: Map Container Styles >>> */
+        #map-container {
+            position: relative; /* Needed for the expand button */
+            margin-bottom: 3rem; /* mb-12 */
+        }
+        .map-container-small {
+            height: 350px;
+        }
+        .map-container-large {
+            height: 75vh; /* 75% of viewport height */
+        }
         #map {
-            height: 500px;
             width: 100%;
+            height: 100%; /* Fill container */
             border-radius: 0.5rem;
             border: 1px solid #d1d5db;
             z-index: 1; /* Ensure map is clickable */
+            transition: height 0.3s ease-in-out; /* Smooth transition */
         }
         .chart-container {
             position: relative;
             margin: auto;
             height: 50vh; /* Main chart height */
             width: 90%;
-            /* max-width: 800px; */ /* Removed max-width */
         }
-        /* MODIFIED: Removed fixed height */
         .small-chart-container {
              position: relative;
              margin: auto;
@@ -50,9 +58,7 @@
              max-width: 500px;
         }
         input[type="date"], select {
-            appearance: none;
-            -webkit-appearance: none;
-            -moz-appearance: none;
+            /* Basic styling for inputs */
             padding: 0.5rem;
             border: 1px solid #d1d5db; /* gray-300 */
             border-radius: 0.375rem; /* rounded-md */
@@ -64,13 +70,11 @@
             color: #9ca3af; /* gray-400 */
             font-style: italic;
         }
-        /* <<< ADDED: Style for disabled inputs >>> */
         input:disabled, select:disabled {
             background-color: #f3f4f6; /* gray-100 */
             cursor: not-allowed;
             opacity: 0.7;
         }
-        /* <<< ADDED: Leaflet Legend Styles >>> */
         .info.legend {
             background: white;
             padding: 10px;
@@ -102,7 +106,6 @@
         </div>
 
         <!-- Filter Section -->
-        <!-- <<< MODIFIED: Grid layout to fit 8 items perfectly >>> -->
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6 p-4 border border-gray-200 rounded-lg bg-gray-50 items-end">
              <div>
                 <label for="provinceFilter" class="block text-sm font-medium text-gray-700 mb-1">Province</label>
@@ -116,14 +119,12 @@
                     <option value="">All Categories</option>
                 </select>
             </div>
-            <!-- <<< ADDED: Municipality Filter (initially disabled) >>> -->
             <div>
                 <label for="municipalityFilter" class="block text-sm font-medium text-gray-700 mb-1">Municipality</label>
                 <select id="municipalityFilter" name="municipality" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm bg-gray-200" disabled>
                     <option value="">All (Select Province First)</option>
                 </select>
             </div>
-            <!-- <<< ADDED: Quarter Filter >>> -->
             <div>
                 <label for="quarterFilter" class="block text-sm font-medium text-gray-700 mb-1">Quarter</label>
                 <select id="quarterFilter" name="quarter" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
@@ -134,14 +135,12 @@
                     <option value="4">Q4 (Oct-Dec)</option>
                 </select>
             </div>
-            <!-- <<< ADDED: Year Filter >>> -->
              <div>
                 <label for="yearFilter" class="block text-sm font-medium text-gray-700 mb-1">Year</label>
                 <select id="yearFilter" name="year" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
                     <option value="">All Years</option>
                 </select>
             </div>
-             <!-- <<< MODIFIED: Removed wrapper div from dates >>> -->
              <div>
                 <label for="startDateFilter" class="block text-sm font-medium text-gray-700 mb-1">Start Date</label>
                 <input type="date" id="startDateFilter" name="start_date" class="mt-1 block w-full text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
@@ -162,9 +161,23 @@
         <div id="error" class="text-center text-red-500 my-4 hidden"></div>
         <div id="noData" class="text-center text-gray-500 my-4 hidden">No data available for the selected filters.</div>
 
-        <!-- <<< ADDED: Leaflet Map Container >>> -->
-        <h2 class="text-xl font-semibold text-gray-700 mb-4">Total Losses by Municipality (Map)</h2>
-        <div id="map" class="mb-12"></div>
+        <!-- Leaflet Map Container -->
+        <div class="flex justify-between items-center mb-4">
+            <h2 class="text-xl font-semibold text-gray-700">Total Losses by Municipality (Map)</h2>
+            <!-- <<< ADDED: Expand/Minimize Button >>> -->
+            <button id="toggleMapBtn" title="Toggle Map Size" class="p-2 rounded-md hover:bg-gray-100 text-gray-600">
+                <svg id="mapExpandIcon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75v4.5m0-4.5h-4.5m4.5 0L15 9m5.25 11.25v-4.5m0 4.5h-4.5m4.5 0L15 15" />
+                </svg>
+                <svg id="mapMinimizeIcon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6 hidden">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9V4.5M15 9h4.5M15 9l5.25-5.25M15 15v4.5M15 15h4.5M15 15l5.25 5.25" />
+                </svg>
+            </button>
+        </div>
+        <div id="map-container" class="map-container-small"> <!-- Container to control map size -->
+            <div id="map"></div> <!-- Map will be initialized here -->
+        </div>
+
 
         <!-- Main Bar Chart Canvas -->
         <div class="chart-container mb-12">
@@ -187,10 +200,8 @@
 
 
         <!-- Data Table -->
-        <!-- <<< MODIFIED: Added flex container for title and search bar >>> -->
         <div class="flex justify-between items-center mb-4">
             <h2 class="text-xl font-semibold text-gray-700">Detailed Records (Max 100 shown)</h2>
-            <!-- <<< ADDED: Search Input >>> -->
             <div>
                 <label for="tableSearch" class="sr-only">Search Table</label>
                 <input type="text" id="tableSearch" placeholder="Search table..." class="block w-full pl-3 pr-4 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
@@ -208,7 +219,6 @@
                         <th class="px-4 py-3 border-b border-gray-200 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Disaster Category</th>
                         <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Losses PHP Grand Total</th>
                         <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Farmers Affected</th>
-                        <!-- <<< ADDED: New Table Headers >>> -->
                         <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Registered Farmers</th>
                         <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Declared Rice Area (ha)</th>
                         <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Affected Farmers (%)</th>
@@ -227,10 +237,10 @@
         // --- Enable Dayjs plugins ---
         dayjs.extend(dayjs_plugin_utc);
         dayjs.extend(dayjs_plugin_customParseFormat);
-        dayjs.extend(dayjs_plugin_quarterOfYear); // <<< ADDED
+        dayjs.extend(dayjs_plugin_quarterOfYear);
 
         // --- Constants and Globals ---
-        // <<< MODIFIED: API endpoint for charts/table (matches new api.py) >>>
+        // Use relative URLs, which will work with your portal's URL
         const chartApiUrl = 'http://localhost:8000/api/raw'; // Use a relative path
         // <<< ADDED: API endpoint for map data (matches new api.py) >>>
         const mapApiUrl = 'http://localhost:8000/query'; // Use a relative path
@@ -240,7 +250,7 @@
         const noDataDiv = document.getElementById('noData');
         const dataTable = document.getElementById('dataTable');
         const dataTableBody = document.getElementById('dataTableBody');
-        const tableNote = document.getElementById('tableNote'); // <<< Get table note div
+        const tableNote = document.getElementById('tableNote');
 
         // Chart elements and variables
         const barChartCanvas = document.getElementById('lossesChart');
@@ -249,9 +259,10 @@
         let barChartInstance = null;
         let timeSeriesChartInstance = null;
         let categoryPieChartInstance = null;
-        let provinceMunicipalityMap = {}; // <<< ADDED: To store municipality data
+        let provinceMunicipalityMap = {};
 
-        // <<< ADDED: Map variables >>>
+        // Map variables
+        const mapContainer = document.getElementById('map-container');
         let mapInstance = null;
         let geojsonLayer = null;
         let mapLegend = null;
@@ -259,21 +270,25 @@
         // Filter elements
         const provinceFilter = document.getElementById('provinceFilter');
         const categoryFilter = document.getElementById('categoryFilter');
-        const municipalityFilter = document.getElementById('municipalityFilter'); // <<< ADDED
-        const quarterFilter = document.getElementById('quarterFilter'); // <<< ADDED
-        const yearFilter = document.getElementById('yearFilter'); // <<< ADDED
+        const municipalityFilter = document.getElementById('municipalityFilter');
+        const quarterFilter = document.getElementById('quarterFilter');
+        const yearFilter = document.getElementById('yearFilter');
         const startDateFilter = document.getElementById('startDateFilter');
         const endDateFilter = document.getElementById('endDateFilter');
         const applyFiltersBtn = document.getElementById('applyFiltersBtn');
-        const tableSearchInput = document.getElementById('tableSearch'); // <<< ADDED: Get search input
+        const tableSearchInput = document.getElementById('tableSearch');
+        const toggleMapBtn = document.getElementById('toggleMapBtn');
+        const mapExpandIcon = document.getElementById('mapExpandIcon');
+        const mapMinimizeIcon = document.getElementById('mapMinimizeIcon');
 
         // --- Helper: Format Numbers ---
         function formatNumber(value) {
+            value = parseFloat(value);
+            if (isNaN(value)) return '0';
             if (value >= 1e9) return (value / 1e9).toFixed(1) + ' B';
             if (value >= 1e6) return (value / 1e6).toFixed(1) + ' M';
             if (value >= 1e3) return (value / 1e3).toFixed(1) + ' K';
-            // <<< MODIFIED: Handle 0 or invalid numbers correctly >>>
-            return !isNaN(parseFloat(value)) ? parseFloat(value).toLocaleString() : '0';
+            return value.toLocaleString();
         }
         function formatCurrency(value) {
             const numericValue = parseFloat(value);
@@ -283,26 +298,20 @@
             const intValue = parseInt(value, 10);
             return (isNaN(intValue) ? 0 : intValue).toLocaleString();
         }
-        // <<< ADDED: Helper to format percentage or show N/A >>>
         function formatPercentage(value) {
             const numericValue = parseFloat(value);
-             // Check for null, undefined, or NaN
              if (value === null || value === undefined || isNaN(numericValue)) {
                  return '<span class="na-value">N/A</span>';
              }
              return numericValue.toFixed(2) + '%';
         }
-        // <<< ADDED: Helper to format farmer/area numbers or show N/A >>>
         function formatRegistryNumber(value) {
              const numericValue = parseFloat(value);
-             // Check for null, undefined, NaN, or 0 (0 might mean no data available in registry)
              if (value === null || value === undefined || isNaN(numericValue) || numericValue === 0) {
                  return '<span class="na-value">N/A</span>';
              }
-             // Format area with decimals, farmers as integers
              return value === parseInt(value, 10) ? formatInt(value) : parseFloat(value).toFixed(2).toLocaleString();
         }
-        // <<< ADDED: Helper to display text or N/A >>>
         function formatText(value) {
              if (value === null || value === undefined || value === 'N/A' || value === 'Unknown' || value === '') {
                  return '<span class="na-value">N/A</span>';
@@ -310,8 +319,7 @@
              return value;
         }
 
-        // --- <<< ADDED: Map Helper Functions >>> ---
-        // Color scale for map
+        // --- Map Helper Functions ---
         function getMapColor(losses) {
             losses = parseFloat(losses) || 0;
             return losses > 100000000 ? '#800026' : // > 100M
@@ -324,7 +332,6 @@
                                         '#FFEDA0';  // <= 100K
         }
 
-        // Style function for GeoJSON layer
         function styleMapFeature(feature) {
             return {
                 fillColor: getMapColor(feature.properties.total_losses_php),
@@ -335,22 +342,20 @@
             };
         }
 
-        // Popup function for map features
         function onEachMapFeature(feature, layer) {
             if (feature.properties) {
                 const props = feature.properties;
                 const content = `
                     <div class="font-sans">
-                        <div class="font-bold text-base mb-1">${props.municipality || 'N/A'}</div>
+                        <div class="font-bold text-base mb-1">${props.municipality_name || 'N/A'}</div>
                         <div class="text-sm">
-                            <strong>Province:</strong> ${props.province || 'N/A'}<br>
+                            <strong>Province:</strong> ${props.province_name || 'N/A'}<br>
                             <strong>Total Losses:</strong> ${formatCurrency(props.total_losses_php)}<br>
                             <strong>Farmers Affected:</strong> ${formatInt(props.total_farmers_affected)}
                         </div>
                     </div>
                 `;
                 layer.bindPopup(content);
-                // Highlight feature on hover
                 layer.on({
                     mouseover: (e) => e.target.setStyle({ weight: 3, color: '#333' }),
                     mouseout: (e) => geojsonLayer.resetStyle(e.target)
@@ -358,16 +363,26 @@
             }
         }
 
-        // --- <<< ADDED: Function to Initialize Map (without data) >>> ---
+        // --- Function to Initialize Map (without data) ---
         function initializeMap() {
             try {
-                // 1. Initialize the map
-                mapInstance = L.map('map').setView([11.1, 122.5], 8); // Centered on Western Visayas
+                mapInstance = L.map('map', {
+                    scrollWheelZoom: false // <<< MODIFIED: Disable scroll zoom by default
+                }).setView([11.1, 122.5], 8); // Centered on Western Visayas
+                
                 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                 }).addTo(mapInstance);
 
-                // 2. Add Legend
+                // <<< ADDED: Enable scroll zoom only on map click >>>
+                mapInstance.on('click', () => {
+                    mapInstance.scrollWheelZoom.enable();
+                });
+                // <<< ADDED: Disable scroll zoom when mouse leaves map >>>
+                mapInstance.on('mouseout', () => {
+                    mapInstance.scrollWheelZoom.disable();
+                });
+
                 mapLegend = L.control({position: 'bottomright'});
                 mapLegend.onAdd = function (map) {
                     const div = L.DomUtil.create('div', 'info legend');
@@ -388,11 +403,34 @@
             }
         }
 
-        // --- <<< ADDED: Function to Update Map with Filtered Data >>> ---
+        // --- <<< ADDED: Function to toggle map size >>> ---
+        function toggleMapSize() {
+            const isSmall = mapContainer.classList.contains('map-container-small');
+            if (isSmall) {
+                mapContainer.classList.remove('map-container-small');
+                mapContainer.classList.add('map-container-large');
+                mapExpandIcon.classList.add('hidden');
+                mapMinimizeIcon.classList.remove('hidden');
+            } else {
+                mapContainer.classList.remove('map-container-large');
+                mapContainer.classList.add('map-container-small');
+                mapExpandIcon.classList.remove('hidden');
+                mapMinimizeIcon.classList.add('hidden');
+            }
+            // IMPORTANT: Tell Leaflet to re-check its size after the CSS transition
+            setTimeout(() => {
+                if (mapInstance) {
+                    mapInstance.invalidateSize();
+                }
+            }, 300); // 300ms matches the CSS transition duration
+        }
+        toggleMapBtn.addEventListener('click', toggleMapSize);
+
+
+        // --- Function to Update Map with Filtered Data ---
         async function updateMap(params) {
             console.log("Updating map data...");
             try {
-                // 1. Fetch filtered GeoJSON data from /api/query
                 const filteredMapUrl = `${mapApiUrl}?${params.toString()}`;
                 console.log("Fetching map data from:", filteredMapUrl);
                 
@@ -401,23 +439,25 @@
                 const geojsonData = await response.json();
                 console.log("Filtered map data fetched:", geojsonData.features.length, "features");
 
-                // 2. Clear old layer and add new one
                 if (geojsonLayer) {
                     mapInstance.removeLayer(geojsonLayer);
                 }
                 
-                geojsonLayer = L.geoJSON(geojsonData, {
-                    style: styleMapFeature,
-                    onEachFeature: onEachMapFeature
-                }).addTo(mapInstance);
-
-                // 3. (Optional) Fly to new bounds if filtered
-                // This is complex, so we'll skip for now and keep the map centered.
-                // mapInstance.fitBounds(geojsonLayer.getBounds());
+                if (geojsonData.features.length > 0) {
+                    geojsonLayer = L.geoJSON(geojsonData, {
+                        style: styleMapFeature,
+                        onEachFeature: onEachMapFeature
+                    }).addTo(mapInstance);
+                    
+                    // Only fit bounds if there's something to show
+                    mapInstance.fitBounds(geojsonLayer.getBounds());
+                } else {
+                    // No features, reset view
+                    mapInstance.setView([11.1, 122.5], 8);
+                }
 
             } catch (error) {
                  console.error('Error fetching data for map:', error);
-                 // Don't overwrite the whole map, just show an error
                  errorDiv.textContent = `Error loading map data: ${error.message}`;
                  errorDiv.classList.remove('hidden');
             }
@@ -428,8 +468,6 @@
         async function populateFilters() {
             console.log("Populating filters...");
             try {
-                // Fetch unfiltered data to get all possible provinces/categories
-                // <<< MODIFIED: Use chartApiUrl >>>
                 const response = await fetch(`${chartApiUrl}?limit=5000`);
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
                 const result = await response.json();
@@ -438,7 +476,7 @@
                     
                     const provincesSet = new Set();
                     const categoriesSet = new Set();
-                    const yearsSet = new Set(); // <<< ADDED
+                    const yearsSet = new Set();
                     provinceMunicipalityMap = {}; // Reset map
 
                     allData.forEach(item => {
@@ -459,31 +497,25 @@
                         if (category && category !== 'Unknown') {
                             categoriesSet.add(category);
                         }
-                        // <<< ADDED: Populate years >>>
-                        // <<< MODIFIED: Use the 'year' column directly as it's cleaner >>>
-                        if (item.year) {
+                        if (item.year && item.year > 1900) { // Filter out bad year data
                             yearsSet.add(item.year);
                         }
                     });
 
-                    // Sort sets
                     const provinces = [...provincesSet].sort();
                     const categories = [...categoriesSet].sort();
-                    const years = [...yearsSet].sort((a, b) => b - a); // <<< ADDED: Sort years descending
-                    // Convert map sets to sorted arrays
+                    const years = [...yearsSet].sort((a, b) => b - a);
                     for (const prov in provinceMunicipalityMap) {
                         provinceMunicipalityMap[prov] = [...provinceMunicipalityMap[prov]].sort();
                     }
 
-
-                    // Clear existing options except the first "All" option
                     while (provinceFilter.options.length > 1) provinceFilter.remove(1);
                     while (categoryFilter.options.length > 1) categoryFilter.remove(1);
-                    while (yearFilter.options.length > 1) yearFilter.remove(1); // <<< ADDED
+                    while (yearFilter.options.length > 1) yearFilter.remove(1);
 
                     provinces.forEach(p => provinceFilter.add(new Option(p, p)));
                     categories.forEach(c => categoryFilter.add(new Option(c, c)));
-                    years.forEach(y => yearFilter.add(new Option(y, y))); // <<< ADDED
+                    years.forEach(y => yearFilter.add(new Option(y, y)));
                     console.log("Filters populated.");
                 } else {
                      console.error("Could not fetch data to populate filters:", result.message || "Unknown error");
@@ -495,33 +527,28 @@
             }
         }
 
-        // --- <<< ADDED: Function to Update Municipality Filter >>> ---
+        // --- Function to Update Municipality Filter ---
         function updateMunicipalityFilter() {
             const selectedProvince = provinceFilter.value;
-            // Clear existing municipality options
             while (municipalityFilter.options.length > 1) municipalityFilter.remove(1);
             
             if (selectedProvince && provinceMunicipalityMap[selectedProvince]) {
-                // Enable filter and populate
                 municipalityFilter.disabled = false;
                 municipalityFilter.classList.remove('bg-gray-200');
-                municipalityFilter.options[0].text = "All Municipalities"; // Change prompt text
+                municipalityFilter.options[0].text = "All Municipalities";
                 
                 provinceMunicipalityMap[selectedProvince].forEach(mun => {
                     municipalityFilter.add(new Option(mun, mun));
                 });
             } else {
-                // Disable filter
                 municipalityFilter.disabled = true;
                 municipalityFilter.classList.add('bg-gray-200');
-                municipalityFilter.options[0].text = "All (Select Province First)"; // Reset prompt text
+                municipalityFilter.options[0].text = "All (Select Province First)";
             }
         }
-        // <<< ADDED: Event listener for province filter change >>>
         provinceFilter.addEventListener('change', updateMunicipalityFilter);
 
-
-        // --- <<< ADDED: Function to handle mutually exclusive time filters >>> ---
+        // --- Function to handle mutually exclusive time filters ---
         function handleTimeFilterChange(source) {
             const quarter = quarterFilter.value;
             const year = yearFilter.value;
@@ -529,90 +556,79 @@
             const end = endDateFilter.value;
 
             if (source === 'quarterYear') {
-                // If user is using Quarter or Year, disable and clear Start/End
                 if (quarter || year) {
                     startDateFilter.value = '';
                     endDateFilter.value = '';
                     startDateFilter.disabled = true;
                     endDateFilter.disabled = true;
                 } else {
-                    // If they cleared both, re-enable Start/End
                     startDateFilter.disabled = false;
                     endDateFilter.disabled = false;
                 }
             } else if (source === 'dateRange') {
-                // If user is using Start or End, disable and clear Quarter/Year
                 if (start || end) {
                     quarterFilter.value = '';
                     yearFilter.value = '';
                     quarterFilter.disabled = true;
                     yearFilter.disabled = true;
                 } else {
-                    // If they cleared both, re-enable Quarter/Year
                     quarterFilter.disabled = false;
                     yearFilter.disabled = false;
                 }
             }
         }
-        // <<< ADDED: Event listeners for time filters >>>
         quarterFilter.addEventListener('change', () => handleTimeFilterChange('quarterYear'));
         yearFilter.addEventListener('change', () => handleTimeFilterChange('quarterYear'));
         startDateFilter.addEventListener('input', () => handleTimeFilterChange('dateRange'));
         endDateFilter.addEventListener('input', () => handleTimeFilterChange('dateRange'));
 
 
-        // --- <<< MODIFIED: Main function to fetch all data >>> ---
+        // --- Main function to fetch all data ---
         async function fetchDataAndDisplay() {
             loadingDiv.style.display = 'block';
             errorDiv.classList.add('hidden');
             noDataDiv.classList.add('hidden');
             dataTable.classList.add('hidden');
             dataTableBody.innerHTML = '';
-            tableNote.classList.add('hidden'); // <<< Hide table note initially
-            tableSearchInput.value = ''; // <<< ADDED: Clear search input on new fetch
+            tableNote.classList.add('hidden');
+            tableSearchInput.value = '';
 
-            // Destroy existing charts
             if (barChartInstance) barChartInstance.destroy();
             if (timeSeriesChartInstance) timeSeriesChartInstance.destroy();
             if (categoryPieChartInstance) categoryPieChartInstance.destroy();
 
-            // Build API URL with Filters
             const params = new URLSearchParams();
             const province = provinceFilter.value;
             const category = categoryFilter.value;
-            const municipality = municipalityFilter.value; // <<< ADDED
-            const quarter = quarterFilter.value; // <<< ADDED
-            const year = yearFilter.value; // <<< ADDED
+            const municipality = municipalityFilter.value;
+            const quarter = quarterFilter.value;
+            const year = yearFilter.value;
             const startDate = startDateFilter.value;
             const endDate = endDateFilter.value;
 
             if (province) params.append('province', province);
             if (category) params.append('disaster_category', category);
-            if (municipality) params.append('municipality', municipality); // <<< ADDED
-            if (quarter) params.append('quarter', quarter); // <<< ADDED
-            if (year) params.append('year', year); // <<< ADDED
+            if (municipality) params.append('municipality', municipality);
+            if (quarter) params.append('quarter', quarter);
+            if (year) params.append('year', year);
             if (startDate) params.append('start_date', startDate);
             if (endDate) params.append('end_date', endDate);
             
-            // --- <<< NEW: Fetch Map Data and Chart Data in Parallel >>> ---
-            // 1. Update Map Data (pass a copy of params)
+            // --- Fetch Map Data and Chart Data in Parallel ---
             const mapParams = new URLSearchParams(params);
-            // The map doesn't need a high limit, it's aggregated
             updateMap(mapParams); 
 
-            // 2. Fetch Chart & Table Data (pass a copy of params)
             const chartParams = new URLSearchParams(params);
-            chartParams.append('limit', 5000); // High limit for charts/table
+            chartParams.append('limit', 5000);
             fetchChartData(chartParams);
         }
 
-        // --- <<< NEW: Function dedicated to fetching chart/table data >>> ---
+        // --- Function dedicated to fetching chart/table data ---
         async function fetchChartData(params) {
             const filteredChartUrl = `${chartApiUrl}?${params.toString()}`;
             console.log("Fetching chart data from:", filteredChartUrl);
 
             try {
-                // <<< MODIFIED: Simple fetch without auth headers >>>
                 const response = await fetch(filteredChartUrl);
                 if (!response.ok) {
                     let errorMsg = `HTTP error! status: ${response.status}`;
@@ -623,12 +639,12 @@
 
                 if (result.status === 'success' && result.data && result.data.length > 0) {
                     const data = result.data;
-                    console.log(`Filtered chart data fetched: ${data.length} items`, data.slice(0, 5)); // Log first 5 items
+                    console.log(`Filtered chart data fetched: ${data.length} items`, data.slice(0, 5));
 
                     // --- 1. Prepare Data for Bar Chart ---
                     let barGroupByKey = 'province';
                     let barChartTitle = 'Total Disaster Losses PHP Grand Total by Province';
-                    const province = params.get('province'); // Get filters from params
+                    const province = params.get('province');
                     const municipality = params.get('municipality');
                     const category = params.get('disaster_category');
 
@@ -640,13 +656,11 @@
 
                     const lossesByBarGroup = data.reduce((acc, item) => {
                         const key = item[barGroupByKey] || 'Unknown';
-                        // Ensure losses_php_grand_total is treated as a number
                         const lossValue = parseFloat(item.losses_php_grand_total);
                         acc[key] = (acc[key] || 0) + (isNaN(lossValue) ? 0 : lossValue);
                         return acc;
                     }, {});
 
-                    // Sort groups by loss value descending for bar chart
                     const sortedBarGroups = Object.entries(lossesByBarGroup).sort(([,a],[,b]) => b-a);
                     const barLabels = sortedBarGroups.map(([key]) => key);
                     const barValues = sortedBarGroups.map(([,value]) => value);
@@ -667,7 +681,6 @@
                     const monthlyLossValues = sortedMonths.map(month => lossesByMonth[month]);
 
                     // --- 3. Prepare Data for Pie Chart (Category Distribution) ---
-                    // <<< MODIFIED: Group small slices into 'OTHERS' >>>
                     const lossesByCategory = data.reduce((acc, item) => {
                         const key = item.disaster_category || 'Unknown';
                         const lossValue = parseFloat(item.losses_php_grand_total);
@@ -675,7 +688,6 @@
                         return acc;
                     }, {});
                     
-                    // Group small categories
                     const sortedCategories = Object.entries(lossesByCategory).sort(([,a],[,b]) => b-a);
                     const topN = 8; // Show top 8 categories
                     let categoryLabels = [];
@@ -705,23 +717,23 @@
                     barChartInstance = new Chart(barCtx, {
                         type: 'bar',
                         data: {
-                            labels: barLabels, // Use sorted labels
+                            labels: barLabels,
                             datasets: [{
                                 label: 'Losses PHP Grand Total',
-                                data: barValues, // Use sorted values
+                                data: barValues,
                                 backgroundColor: 'rgba(54, 162, 235, 0.6)',
                                 borderColor: 'rgba(54, 162, 235, 1)',
                                 borderWidth: 1
                              }]
                         },
                         options: {
-                            responsive: true, maintainAspectRatio: false, indexAxis: 'y', // Make it horizontal for potentially many labels
+                            responsive: true, maintainAspectRatio: false, indexAxis: 'y',
                              scales: {
-                                 y: { // Now the category axis
+                                 y: { 
                                      beginAtZero: true,
                                      title: { display: true, text: barGroupByKey.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) }
                                  },
-                                 x: { // Now the value axis
+                                 x: { 
                                       title: { display: true, text: 'Losses PHP Grand Total' },
                                       ticks: { callback: formatNumber }
                                  }
@@ -729,13 +741,13 @@
                             plugins: {
                                 legend: { display: false },
                                 title: { display: true, text: barChartTitle, font: { size: 16 } },
-                                tooltip: { callbacks: { label: ctx => `Losses PHP Grand Total: ${formatCurrency(ctx.parsed.x)}` } } // x for horizontal bar
+                                tooltip: { callbacks: { label: ctx => `Losses PHP Grand Total: ${formatCurrency(ctx.parsed.x)}` } }
                             }
                         }
                     });
 
                     // --- Create Line Chart ---
-                    if (sortedMonths.length > 0) { // Only render if data exists
+                    if (sortedMonths.length > 0) {
                         const lineCtx = timeSeriesCanvas.getContext('2d');
                         timeSeriesChartInstance = new Chart(lineCtx, {
                              type: 'line',
@@ -743,7 +755,6 @@
                              options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, title: { display: true, text: 'Total Losses (PHP)' }, ticks: { callback: formatNumber } }, x: { title: { display: true, text: 'Month' } } }, plugins: { legend: { display: false }, title: { display: false }, tooltip: { callbacks: { label: ctx => `Total Losses: ${formatCurrency(ctx.parsed.y)}` } } } }
                         });
                     } else {
-                         // Optionally display a message if no time data
                          const lineCtx = timeSeriesCanvas.getContext('2d');
                          lineCtx.clearRect(0, 0, timeSeriesCanvas.width, timeSeriesCanvas.height);
                          lineCtx.font = '16px "Inter"';
@@ -754,23 +765,27 @@
 
 
                     // --- Create Pie Chart ---
-                     if (categoryLabels.length > 0) { // Only render if data exists
+                     if (categoryLabels.length > 0) {
                         const pieCtx = categoryPieCanvas.getContext('2d');
                         const pieColors = ['rgba(255, 99, 132, 0.7)', 'rgba(54, 162, 235, 0.7)', 'rgba(255, 206, 86, 0.7)', 'rgba(75, 192, 192, 0.7)', 'rgba(153, 102, 255, 0.7)', 'rgba(255, 159, 64, 0.7)', 'rgba(199, 199, 199, 0.7)', 'rgba(83, 102, 255, 0.7)', 'rgba(100, 255, 100, 0.7)'];
                         categoryPieChartInstance = new Chart(pieCtx, {
                              type: 'pie',
                              data: { labels: categoryLabels, datasets: [{ label: 'Losses by Category (PHP)', data: categoryLossValues, backgroundColor: pieColors.slice(0, categoryLabels.length), hoverOffset: 4 }] },
-                             options: { responsive: true, maintainAspectRatio: false, plugins: { 
-                                 legend: { 
-                                     position: 'right', // <<< MODIFIED: Legend to the right
-                                     labels: {
-                                         padding: 10,
-                                         boxWidth: 12
-                                     }
-                                 }, 
-                                 title: { display: false }, 
-                                 tooltip: { callbacks: { label: ctx => `${ctx.label}: ${formatCurrency(ctx.parsed)}` } } 
-                             } }
+                             options: { 
+                                 responsive: true, 
+                                 maintainAspectRatio: false, 
+                                 plugins: { 
+                                     legend: { 
+                                         position: 'right', // Legend to the right
+                                         labels: {
+                                             padding: 10,
+                                             boxWidth: 12
+                                         }
+                                     }, 
+                                     title: { display: false }, 
+                                     tooltip: { callbacks: { label: ctx => `${ctx.label}: ${formatCurrency(ctx.parsed)}` } } 
+                                 } 
+                             }
                         });
                     } else {
                          const pieCtx = categoryPieCanvas.getContext('2d');
@@ -784,13 +799,11 @@
 
                     // --- Populate Table (Limited Rows) ---
                     const tableLimit = 100;
-                    // <<< UPDATED: Check for farmer data presence to show note >>>
                     let farmerDataAvailable = false;
                     data.slice(0, tableLimit).forEach(item => {
                         const row = document.createElement('tr');
-                        row.className = 'hover:bg-gray-50 text-sm'; // Ensure consistent text size
+                        row.className = 'hover:bg-gray-50 text-sm';
 
-                        // <<< ADDED: Check if farmer registry columns exist and have non-null/non-zero values >>>
                         const hasFarmerData = item.registered_rice_farmers !== null && item.registered_rice_farmers !== undefined && item.registered_rice_farmers > 0;
                         if (hasFarmerData) farmerDataAvailable = true;
 
@@ -802,7 +815,6 @@
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700">${formatText(item.disaster_category)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatCurrency(item.losses_php_grand_total)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatInt(item.farmers_affected)}</td>
-                            <!-- <<< UPDATED: Use formatters for new columns >>> -->
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatRegistryNumber(item.registered_rice_farmers)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatRegistryNumber(item.total_declared_rice_area_ha)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatPercentage(item.percentage_farmers_affected)}</td>
@@ -810,7 +822,6 @@
                         dataTableBody.appendChild(row);
                      });
                      dataTable.classList.remove('hidden');
-                     // <<< UPDATED: Show note only if farmer data was actually present >>>
                      if (farmerDataAvailable) {
                          tableNote.classList.remove('hidden');
                      }
@@ -837,14 +848,13 @@
         // --- Event Listener for Filter Button ---
         applyFiltersBtn.addEventListener('click', fetchDataAndDisplay);
 
-        // --- <<< ADDED: Event Listener and Function for Table Search >>> ---
+        // --- Event Listener and Function for Table Search ---
         function filterTable() {
             const searchTerm = tableSearchInput.value.toLowerCase();
             const rows = dataTableBody.getElementsByTagName('tr');
 
             for (let i = 0; i < rows.length; i++) {
                 const row = rows[i];
-                // Use textContent for a broad search across all row text
                 const rowText = row.textContent || row.innerText;
 
                 if (rowText.toLowerCase().indexOf(searchTerm) > -1) {
@@ -859,7 +869,6 @@
 
         // --- Initial Load ---
         async function initializeDashboard() {
-            // <<< MODIFIED: Initialize map, then filters, then charts/table >>>
             initializeMap(); // Initialize the empty map
             await populateFilters();
             await fetchDataAndDisplay(); // Fetch data for both map and charts

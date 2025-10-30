@@ -1,6 +1,6 @@
 import json
 from fastapi import FastAPI, Query, HTTPException # Import HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse # Import FileResponse for serving JSON file
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import duckdb
@@ -23,16 +23,8 @@ AGGREGATED_GEOJSON_FILE = os.path.join(BASE_DIR, 'api_output/api_data.json')
 app = FastAPI()
 
 # --- CORS Middleware ---
-origins = [
-    "http://localhost", 
-    "http://localhost:8000", 
-    "http://127.0.0.1", 
-    "http://127.0.0.1:8000", 
-    "https://dawvinfosys.test", 
-    "https://27.110.161.135", 
-    "https://27.110.161.135:8445", # Added the specific port
-    "null"
-]
+origins = ["http://localhost", "http://localhost:8000", "http://127.0.0.1", "http://127.0.0.1:8000", "https://dawvinfosys.test", "https://27.110.161.135", "null"]
+# origins = ["*"] # Allow all for easier local dev, restrict in production
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -49,18 +41,21 @@ def clean_data_for_json(data):
         cleaned_row = {}
         for key, value in row_dict.items():
             if isinstance(value, (np.int64, np.int32)):
+                 # Handle potential Pandas nullable integer <NA> which becomes pd.NA
                  cleaned_row[key] = int(value) if pd.notna(value) else None
             elif isinstance(value, (np.float64, np.float32)):
                 if np.isnan(value) or np.isinf(value):
                     cleaned_row[key] = None # Replace NaN/Inf with None
                 else:
+                    # Round floats that might represent percentages or specific values
                     if key == 'percentage_farmers_affected':
                          cleaned_row[key] = round(float(value), 2)
                     else:
                          cleaned_row[key] = float(value)
             elif isinstance(value, (datetime.date, datetime.datetime, pd.Timestamp)):
+                 # Format dates as YYYY-MM-DD strings, handle NaT
                  cleaned_row[key] = value.strftime('%Y-%m-%d') if pd.notna(value) else None
-            elif pd.isna(value):
+            elif pd.isna(value): # Catch remaining pandas NA types (like NaT, None)
                  cleaned_row[key] = None
             else:
                 cleaned_row[key] = value
@@ -85,9 +80,9 @@ async def get_aggregated_geojson_map_data(
     Serves a dynamic GeoJSON file.
     It loads a base GeoJSON for shapes, then runs a filtered/aggregated query
     on the disaster data, merges the results into the GeoJSON properties,
-    and filters the GeoJSON features based on province/municipality.
+    and **filters the GeoJSON features based on province/municipality**.
     """
-    print(f"API (/query): Received map request with filters: prov={province}, mun={municipality}, year={year}, qtr={quarter}, com={commodity}")
+    print(f"API (/query): Received map request with filters: prov={province}, mun={municipality}, year={year}, qtr={quarter}")
     
     # 1. Load the base GeoJSON shapefile
     if not os.path.exists(AGGREGATED_GEOJSON_FILE):
@@ -110,7 +105,6 @@ async def get_aggregated_geojson_map_data(
             print("-------------------------------------")
         except Exception as debug_e:
             print(f"API (/query): Could not print debug keys: {debug_e}")
-    # --- END DEBUGGING STEP ---
 
     # --- Filter GeoJSON Features based on Province/Municipality ---
     if province or municipality:
@@ -125,7 +119,7 @@ async def get_aggregated_geojson_map_data(
             props = feature.get('properties', {})
             
             # --- MODIFIED: Use the correct keys 'province_name' and 'municipality_name' ---
-            feature_province = props.get('province_name')
+            feature_province = props.get('province_name') 
             feature_municipality = props.get('municipality_name')
             # --- END MODIFICATION ---
 
@@ -137,7 +131,7 @@ async def get_aggregated_geojson_map_data(
         
         geojson_data['features'] = filtered_features
         print(f"API (/query): Filtered GeoJSON from {original_feature_count} to {len(filtered_features)} features.")
-    
+
     # 2. Run a filtered, aggregated query to get the new data
     con = None
     safe_lakehouse_path = os.path.normpath(LAKEHOUSE_PATH)
@@ -149,7 +143,6 @@ async def get_aggregated_geojson_map_data(
         print("API (/query): Connecting to DuckDB (in-memory) for aggregation...")
         con = duckdb.connect(read_only=False)
         
-        # --- Register main_disasters view (using fallback) ---
         try:
              con.sql("INSTALL delta; LOAD delta;")
              delta_read_function = None
@@ -171,7 +164,6 @@ async def get_aggregated_geojson_map_data(
              con.sql("CREATE OR REPLACE TEMPORARY VIEW main_disasters AS SELECT * FROM main_disasters_df_pandas;")
              print("API (/query): Registered main_disasters view using pandas fallback.")
         
-        # --- Build WHERE clause ---
         where_clauses = []
         params = {}
         if province:
@@ -207,12 +199,13 @@ async def get_aggregated_geojson_map_data(
             where_sql = "WHERE " + " AND ".join(where_clauses)
 
         # --- Run Aggregation Query ---
+        # <<< MODIFIED: Changed aliases (e.g., total_losses_php) to match raw field names (e.g., losses_php_grand_total) >>>
         agg_query = f"""
         SELECT
             UPPER(d.province) AS province,
             UPPER(d.municipality) AS municipality,
-            SUM(d.losses_php_grand_total) AS total_losses_php,
-            SUM(d.farmers_affected) AS total_farmers_affected,
+            SUM(d.losses_php_grand_total) AS losses_php_grand_total,
+            SUM(d.farmers_affected) AS farmers_affected,
             SUM(d.area_partially_damaged_ha) AS area_partially_damaged_ha,
             SUM(d.area_totally_damaged_ha) AS area_totally_damaged_ha,
             SUM(d.area_total_affected_ha) AS area_total_affected_ha,
@@ -228,49 +221,47 @@ async def get_aggregated_geojson_map_data(
         print(f"API (/query): Executing aggregation query: {agg_query}")
         print(f"API (/query): With parameters: {params}")
         
-        # --- MODIFIED: Use cursor to fetch results directly ---
-        cursor = con.execute(agg_query, params)
-        column_names = [desc[0] for desc in cursor.description]
+        # <<< MODIFIED: Use fetchall() for robust list handling >>>
+        # This avoids pandas conversion issues with list columns
+        query_result_rows = con.execute(agg_query, params).fetchall()
         
-        # Create a lookup map for fast merging directly from cursor
+        # Manually build the data_map to ensure correct types
+        print(f"API (/query): Aggregation query returned {len(query_result_rows)} rows. Building data map...")
         data_map = {}
-        for row in cursor.fetchall():
-            row_dict = dict(zip(column_names, row))
-            key = (row_dict['province'], row_dict['municipality'])
+        for row in query_result_rows:
+            # Map query result columns by index
+            key = (row[0], row[1]) # (province, municipality)
             data_map[key] = {
-                'total_losses_php': row_dict['total_losses_php'],
-                'total_farmers_affected': row_dict['total_farmers_affected'],
-                'area_partially_damaged_ha': row_dict['area_partially_damaged_ha'],
-                'area_totally_damaged_ha': row_dict['area_totally_damaged_ha'],
-                'area_total_affected_ha': row_dict['area_total_affected_ha'],
-                'losses_php_production_cost': row_dict['losses_php_production_cost'],
-                'losses_php_farm_gate': row_dict['losses_php_farm_gate'],
-                'commodities_affected': row_dict['commodities_affected']
+                'losses_php_grand_total': row[2],
+                'farmers_affected': row[3],
+                'area_partially_damaged_ha': row[4],
+                'area_totally_damaged_ha': row[5],
+                'area_total_affected_ha': row[6],
+                'losses_php_production_cost': row[7],
+                'losses_php_farm_gate': row[8],
+                'commodities_affected': row[9] # This is a list
             }
         
-        print(f"API (/query): Aggregation query returned {len(data_map)} rows.")
-        # --- END MODIFICATION ---
-
-        # --- 3. Merge aggregated data into the (already filtered) GeoJSON ---
+        print("API (/query): Data map built successfully.")
         
-        # Loop through the *filtered* GeoJSON features and update properties
+        # --- 3. Merge aggregated data into the (already filtered) GeoJSON ---
         for feature in geojson_data['features']:
             props = feature['properties']
             
-            # --- MODIFIED: Build the key using the correct properties and case ---
+            # Build the key using the correct properties and case
             prop_prov = props.get('province_name')
             prop_mun = props.get('municipality_name')
             key = (
                 prop_prov.upper() if prop_prov else None, 
                 prop_mun.upper() if prop_mun else None
             )
-            # --- END MODIFICATION ---
             
             new_data = data_map.get(key)
             
             if new_data:
-                props['total_losses_php'] = new_data['total_losses_php']
-                props['total_farmers_affected'] = new_data['total_farmers_affected']
+                # <<< MODIFIED: Update all properties with the new aliases >>>
+                props['losses_php_grand_total'] = new_data['losses_php_grand_total']
+                props['farmers_affected'] = new_data['farmers_affected']
                 props['area_partially_damaged_ha'] = new_data['area_partially_damaged_ha']
                 props['area_totally_damaged_ha'] = new_data['area_totally_damaged_ha']
                 props['area_total_affected_ha'] = new_data['area_total_affected_ha']
@@ -278,14 +269,15 @@ async def get_aggregated_geojson_map_data(
                 props['losses_php_farm_gate'] = new_data['losses_php_farm_gate']
                 props['commodities_affected'] = new_data['commodities_affected'] 
             else:
-                props['total_losses_php'] = 0
-                props['total_farmers_affected'] = 0
+                # Reset all properties if no matching data
+                props['losses_php_grand_total'] = 0
+                props['farmers_affected'] = 0
                 props['area_partially_damaged_ha'] = 0
                 props['area_totally_damaged_ha'] = 0
                 props['area_total_affected_ha'] = 0
                 props['losses_php_production_cost'] = 0
                 props['losses_php_farm_gate'] = 0
-                props['commodities_affected'] = []
+                props['commodities_affected'] = [] 
         
         print("API (/query): Successfully merged aggregated data into filtered GeoJSON.")
         return geojson_data
@@ -314,7 +306,7 @@ async def get_raw_disaster_data(
     year: Optional[int] = Query(None, description="Filter by year (e.g., 2023)", ge=1900, le=2100),
     start_date: Optional[datetime.date] = Query(None, description="Filter by start date (YYYY-MM-DD) - inclusive"),
     end_date: Optional[datetime.date] = Query(None, description="Filter by end date (YYYY-MM-DD) - inclusive"),
-    limit: int = Query(10000, description="Maximum number of records to return", gt=0, le=50000)
+    limit: int = Query(10000, description="Maximum number of records to return", gt=0, le=50000) # Increased limit
 ):
     """
     Queries the raw disaster data from the Delta Lake table, optionally joins
@@ -355,8 +347,10 @@ async def get_raw_disaster_data(
              print(f"API WARNING (/api/raw): DuckDB Delta extension failed ({delta_ext_err}). Falling back to reading via pandas.")
              dt_main = DeltaTable(safe_lakehouse_path)
              df_main = dt_main.to_pandas()
+             # Ensure date columns are datetime after pandas load
              if 'event_date_start' in df_main.columns: df_main['event_date_start'] = pd.to_datetime(df_main['event_date_start'], errors='coerce')
              if 'event_date_end' in df_main.columns: df_main['event_date_end'] = pd.to_datetime(df_main['event_date_end'], errors='coerce')
+             # Convert year column explicitly
              if 'year' in df_main.columns: df_main['year'] = pd.to_numeric(df_main['year'], errors='coerce').astype('Int64')
 
              con.register('main_disasters_df_pandas', df_main)
@@ -460,10 +454,10 @@ async def get_raw_disaster_data(
         SELECT
             d.* {select_farmer_cols} {select_calculated_cols} {default_farmer_select}
         FROM
-            main_disasters AS d
-        {join_sql}
-        {where_sql}
-        ORDER BY d.event_date_start DESC, d.province, d.municipality
+            main_disasters AS d -- Use the view created earlier
+        {join_sql} -- Add the join clause if applicable
+        {where_sql} -- Apply filters using alias 'd'
+        ORDER BY d.event_date_start DESC, d.province, d.municipality -- Use alias 'd'
         LIMIT $limit
         """
         params['limit'] = limit if limit > 0 else 10000
@@ -482,8 +476,8 @@ async def get_raw_disaster_data(
         return {"status": "success", "count": len(cleaned_data), "data": cleaned_data}
 
     except HTTPException as http_exc:
-        raise http_exc
-    except duckdb.Error as db_err:
+        raise http_exc # Re-raise FastAPI specific exceptions
+    except duckdb.Error as db_err: # Catch DuckDB specific errors
         error_message = f"Database query error: {str(db_err)}"
         print(f"API ERROR (/api/raw): {error_message}")
         import traceback; traceback.print_exc()

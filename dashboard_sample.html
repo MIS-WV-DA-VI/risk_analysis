@@ -25,28 +25,25 @@
         body {
             font-family: 'Inter', sans-serif;
         }
-        #map-container {
-            position: relative;
-            margin-bottom: 3rem; /* mb-12 */
-        }
-        .map-container-small {
-            height: 350px;
-        }
-        .map-container-large {
-            height: 75vh;
-        }
-        #map {
+        /* MODIFIED: Map height is now controlled by a wrapper */
+        #mapWrapper {
+            height: 350px; /* Default small height */
             width: 100%;
-            height: 100%;
             border-radius: 0.5rem;
             border: 1px solid #d1d5db;
+            position: relative; /* For the expand button */
+            transition: height 0.3s ease-in-out; /* Smooth transition */
+        }
+        #map {
+            height: 100%; /* Map fills the wrapper */
+            width: 100%;
+            border-radius: 0.5rem;
             z-index: 1;
-            transition: height 0.3s ease-in-out;
         }
         .chart-container {
             position: relative;
             margin: auto;
-            height: 50vh;
+            height: 50vh; 
             width: 90%;
         }
         .small-chart-container {
@@ -54,7 +51,6 @@
              margin: auto;
              height: 45vh;
              width: 95%;
-             max-width: 500px;
         }
         input[type="date"], select {
             padding: 0.5rem;
@@ -88,19 +84,12 @@
             opacity: 0.7;
             border: 1px solid #999;
         }
-        /* Style for the main metric selector */
-        #metricSelector {
-            font-weight: 600;
-            font-size: 1.125rem; /* text-lg */
-            padding: 0.5rem 1rem;
-            border-color: #a5b4fc; /* indigo-300 */
-            background-color: #eef2ff; /* indigo-50 */
-        }
     </style>
 </head>
 <body class="bg-gray-100 p-4 md:p-8">
 
     <div class="mx-auto bg-white rounded-lg shadow-md p-6">
+        <!-- MODIFIED: Header with Title and Home Button -->
         <div class="flex justify-between items-center mb-6">
             <h1 class="text-2xl font-bold text-gray-800">Disaster Impact Dashboard</h1>
             <a href="https://27.110.161.135" class="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-md shadow-sm transition duration-150 ease-in-out">
@@ -109,47 +98,59 @@
         </div>
 
         <!-- Filter Section -->
-        <!-- <<< MODIFIED: Grid layout to fit new filters >>> -->
+        <!-- MODIFIED: Grid layout to fit new filters -->
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-6 p-4 border border-gray-200 rounded-lg bg-gray-50 items-end">
              <div>
                 <label for="provinceFilter" class="block text-sm font-medium text-gray-700 mb-1">Province</label>
-                <select id="provinceFilter" name="province" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
+                <select id="provinceFilter" name="province" class="mt-1 block w-full text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
                     <option value="">All Provinces</option>
                 </select>
             </div>
             <div>
                 <label for="municipalityFilter" class="block text-sm font-medium text-gray-700 mb-1">Municipality</label>
-                <select id="municipalityFilter" name="municipality" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm bg-gray-200" disabled>
+                <select id="municipalityFilter" name="municipality" class="mt-1 block w-full text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm bg-gray-200" disabled>
                     <option value="">All (Select Province First)</option>
                 </select>
             </div>
             <div>
                 <label for="categoryFilter" class="block text-sm font-medium text-gray-700 mb-1">Disaster Category</label>
-                <select id="categoryFilter" name="category" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
+                <select id="categoryFilter" name="category" class="mt-1 block w-full text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
                     <option value="">All Categories</option>
                 </select>
             </div>
             <!-- <<< ADDED: Commodity Filter >>> -->
             <div>
                 <label for="commodityFilter" class="block text-sm font-medium text-gray-700 mb-1">Commodity</label>
-                <select id="commodityFilter" name="commodity" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
+                <select id="commodityFilter" name="commodity" class="mt-1 block w-full text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
                     <option value="">All Commodities</option>
                 </select>
             </div>
-             <div>
-                <label for="yearFilter" class="block text-sm font-medium text-gray-700 mb-1">Year</label>
-                <select id="yearFilter" name="year" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
-                    <option value="">All Years</option>
+             <!-- <<< ADDED: Metric Filter >>> -->
+            <div>
+                <label for="metricFilter" class="block text-sm font-medium text-gray-700 mb-1">Metric to Display</label>
+                <select id="metricFilter" name="metric" class="mt-1 block w-full text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
+                    <!-- <<< MODIFIED: Updated values to match API JSON fields >>> -->
+                    <option value="losses_php_grand_total" selected>Total Losses (PHP)</option>
+                    <option value="farmers_affected">Total Farmers Affected</option>
+                    <option value="area_total_affected_ha">Area Affected (ha)</option>
+                    <option value="losses_php_production_cost">Production Cost Losses</option>
+                    <option value="losses_php_farm_gate">Farm Gate Losses</option>
                 </select>
             </div>
             <div>
                 <label for="quarterFilter" class="block text-sm font-medium text-gray-700 mb-1">Quarter</label>
-                <select id="quarterFilter" name="quarter" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
+                <select id="quarterFilter" name="quarter" class="mt-1 block w-full text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
                     <option value="">All Quarters</option>
                     <option value="1">Q1 (Jan-Mar)</option>
                     <option value="2">Q2 (Apr-Jun)</option>
                     <option value="3">Q3 (Jul-Sep)</option>
                     <option value="4">Q4 (Oct-Dec)</option>
+                </select>
+            </div>
+             <div>
+                <label for="yearFilter" class="block text-sm font-medium text-gray-700 mb-1">Year</label>
+                <select id="yearFilter" name="year" class="mt-1 block w-full text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
+                    <option value="">All Years</option>
                 </select>
             </div>
              <div>
@@ -159,19 +160,6 @@
              <div>
                 <label for="endDateFilter" class="block text-sm font-medium text-gray-700 mb-1">End Date</label>
                 <input type="date" id="endDateFilter" name="end_date" class="mt-1 block w-full text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
-            </div>
-            <!-- <<< ADDED: Metric Selector >>> -->
-            <div class="lg:col-span-1">
-                <label for="metricSelector" class="block text-sm font-medium text-gray-700 mb-1">Analysis Metric</label>
-                <select id="metricSelector" name="metric" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm">
-                    <option value="total_losses_php" selected>Total Losses (PHP)</option>
-                    <option value="total_farmers_affected">Farmers Affected</option>
-                    <option value="area_total_affected_ha">Area Affected (ha)</option>
-                    <option value="area_partially_damaged_ha">Area Partially Damaged (ha)</option>
-                    <option value="area_totally_damaged_ha">Area Totally Damaged (ha)</option>
-                    <option value="losses_php_production_cost">Production Cost Losses (PHP)</option>
-                    <option value="losses_php_farm_gate">Farm Gate Losses (PHP)</option>
-                </select>
             </div>
             <div>
                 <button id="applyFiltersBtn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md shadow-sm transition duration-150 ease-in-out">
@@ -186,21 +174,24 @@
         <div id="noData" class="text-center text-gray-500 my-4 hidden">No data available for the selected filters.</div>
 
         <!-- Leaflet Map Container -->
-        <div class="flex justify-between items-center mb-4">
-            <h2 class="text-xl font-semibold text-gray-700">Map Analysis: <span id="mapTitleMetric">Total Losses (PHP)</span></h2>
-            <button id="toggleMapBtn" title="Toggle Map Size" class="p-2 rounded-md hover:bg-gray-100 text-gray-600">
+        <!-- MODIFIED: Added header with expand button -->
+        <div class="flex justify-between items-center mb-2">
+            <h2 class="text-xl font-semibold text-gray-700">Disaster Impact Map</h2>
+            <button id="toggleMapSizeBtn" title="Toggle map size" class="p-1 text-gray-500 hover:text-gray-800">
+                <!-- Expand Icon -->
                 <svg id="mapExpandIcon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75v4.5m0-4.5h-4.5m4.5 0L15 9m5.25 11.25v-4.5m0 4.5h-4.5m4.5 0L15 15" />
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75v4.5m0-4.5h-4.5m4.5 0L15 9M20.25 20.25v-4.5m0 4.5h-4.5m4.5 0L15 15" />
                 </svg>
+                <!-- Minimize Icon (hidden by default) -->
                 <svg id="mapMinimizeIcon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6 hidden">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9V4.5M15 9h4.5M15 9l5.25-5.25M15 15v4.5M15 15h4.5M15 15l5.25 5.25" />
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M9 9V4.5M9 9H4.5M9 9L4.5 4.5M9 15v4.5M9 15H4.5M9 15l-4.5 4.5M15 9V4.5M15 9h4.5M15 9l4.5-4.5M15 15v4.5M15 15h4.5M15 15l4.5 4.5" />
                 </svg>
             </button>
         </div>
-        <div id="map-container" class="map-container-small">
+        <!-- MODIFIED: Map wrapper div for sizing -->
+        <div id="mapWrapper" class="mb-12">
             <div id="map"></div>
         </div>
-
 
         <!-- Main Bar Chart Canvas -->
         <div class="chart-container mb-12">
@@ -211,16 +202,15 @@
         <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-12">
             <!-- Line Chart Container -->
             <div class="small-chart-container bg-gray-50 p-4 pb-6 rounded-lg shadow-sm border border-gray-200">
-                 <h2 class="text-lg font-semibold text-center text-gray-700 mb-3"><span id="timeSeriesTitleMetric">Losses</span> Over Time (Monthly)</h2>
+                 <h2 class="text-lg font-semibold text-center text-gray-700 mb-3">Impact Over Time (Monthly)</h2>
                 <canvas id="timeSeriesChart"></canvas>
             </div>
              <!-- Pie Chart Container -->
             <div class="small-chart-container bg-gray-50 p-4 pb-6 rounded-lg shadow-sm border border-gray-200">
-                 <h2 class="text-lg font-semibold text-center text-gray-700 mb-3"><span id="pieTitleMetric">Loss</span> Distribution by Category</h2>
+                 <h2 class="text-lg font-semibold text-center text-gray-700 mb-3">Distribution by Category</h2>
                 <canvas id="categoryPieChart"></canvas>
             </div>
         </div>
-
 
         <!-- Data Table -->
         <div class="flex justify-between items-center mb-4">
@@ -240,14 +230,14 @@
                         <th class="px-4 py-3 border-b border-gray-200 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Municipality</th>
                         <th class="px-4 py-3 border-b border-gray-200 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Commodity</th>
                         <th class="px-4 py-3 border-b border-gray-200 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Disaster Category</th>
-                        <!-- <<< MODIFIED: Expanded table headers >>> -->
+                        <!-- <<< MODIFIED: All new columns added >>> -->
+                        <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Total Losses (PHP)</th>
                         <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Farmers Affected</th>
                         <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Area Affected (ha)</th>
                         <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Area Partially Damaged (ha)</th>
                         <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Area Totally Damaged (ha)</th>
-                        <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Losses - Prod. Cost (PHP)</th>
-                        <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Losses - Farm Gate (PHP)</th>
-                        <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Losses - Grand Total (PHP)</th>
+                        <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Production Cost Loss (PHP)</th>
+                        <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Farm Gate Loss (PHP)</th>
                         <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Registered Farmers</th>
                         <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Declared Rice Area (ha)</th>
                         <th class="px-4 py-3 border-b border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Affected Farmers (%)</th>
@@ -269,8 +259,9 @@
         dayjs.extend(dayjs_plugin_quarterOfYear);
 
         // --- Constants and Globals ---
-        const chartApiUrl = 'http://localhost:8000/api/raw';
-        const mapApiUrl = 'http://localhost:8000/query';
+        // MODIFIED: Pointing to the correct relative URL for the portal
+        const chartApiUrl = 'http://localhost:8000/api/raw'; // Changed to relative
+        const mapApiUrl = 'http://localhost:8000/query'; // Changed to relative
 
         const loadingDiv = document.getElementById('loading');
         const errorDiv = document.getElementById('error');
@@ -286,42 +277,39 @@
         let barChartInstance = null;
         let timeSeriesChartInstance = null;
         let categoryPieChartInstance = null;
-        let provinceMunicipalityMap = {};
-        let commodityMap = {}; // <<< ADDED: For commodities
+        let provinceMunicipalityMap = {}; 
 
         // Map variables
-        const mapContainer = document.getElementById('map-container');
         let mapInstance = null;
         let geojsonLayer = null;
         let mapLegend = null;
-        const mapTitleMetric = document.getElementById('mapTitleMetric'); // <<< ADDED
-        const timeSeriesTitleMetric = document.getElementById('timeSeriesTitleMetric'); // <<< ADDED
-        const pieTitleMetric = document.getElementById('pieTitleMetric'); // <<< ADDED
+        const mapWrapper = document.getElementById('mapWrapper');
+        const toggleMapSizeBtn = document.getElementById('toggleMapSizeBtn');
+        const mapExpandIcon = document.getElementById('mapExpandIcon');
+        const mapMinimizeIcon = document.getElementById('mapMinimizeIcon');
+        let mapIsExpanded = false;
 
         // Filter elements
         const provinceFilter = document.getElementById('provinceFilter');
         const categoryFilter = document.getElementById('categoryFilter');
         const municipalityFilter = document.getElementById('municipalityFilter');
         const commodityFilter = document.getElementById('commodityFilter'); // <<< ADDED
+        const metricSelector = document.getElementById('metricFilter'); // <<< ADDED
         const quarterFilter = document.getElementById('quarterFilter');
         const yearFilter = document.getElementById('yearFilter');
         const startDateFilter = document.getElementById('startDateFilter');
         const endDateFilter = document.getElementById('endDateFilter');
-        const metricSelector = document.getElementById('metricSelector'); // <<< ADDED
         const applyFiltersBtn = document.getElementById('applyFiltersBtn');
         const tableSearchInput = document.getElementById('tableSearch');
-        const toggleMapBtn = document.getElementById('toggleMapBtn');
-        const mapExpandIcon = document.getElementById('mapExpandIcon');
-        const mapMinimizeIcon = document.getElementById('mapMinimizeIcon');
 
         // --- Helper: Format Numbers ---
         function formatNumber(value) {
-            value = parseFloat(value);
-            if (isNaN(value)) return '0';
-            if (value >= 1e9) return (value / 1e9).toFixed(1) + ' B';
-            if (value >= 1e6) return (value / 1e6).toFixed(1) + ' M';
-            if (value >= 1e3) return (value / 1e3).toFixed(1) + ' K';
-            return value.toLocaleString();
+            const numericValue = parseFloat(value);
+            if (isNaN(numericValue)) return '0';
+            if (numericValue >= 1e9) return (numericValue / 1e9).toFixed(1) + ' B';
+            if (numericValue >= 1e6) return (numericValue / 1e6).toFixed(1) + ' M';
+            if (numericValue >= 1e3) return (numericValue / 1e3).toFixed(1) + ' K';
+            return numericValue.toLocaleString();
         }
         function formatCurrency(value) {
             const numericValue = parseFloat(value);
@@ -343,7 +331,8 @@
              if (value === null || value === undefined || isNaN(numericValue) || numericValue === 0) {
                  return '<span class="na-value">N/A</span>';
              }
-             return value === parseInt(value, 10) ? formatInt(value) : parseFloat(value).toFixed(2).toLocaleString();
+             // Use toLocaleString with 2 decimal places for non-integers
+             return parseFloat(value).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
         }
         function formatText(value) {
              if (value === null || value === undefined || value === 'N/A' || value === 'Unknown' || value === '') {
@@ -353,34 +342,41 @@
         }
 
         // --- Map Helper Functions ---
-        // <<< MODIFIED: Color and Popup functions now dynamic based on selected metric >>>
-        function getMapColor(value) {
+        // MODIFIED: Color scale now depends on the selected metric
+        function getMapColor(value, metric) {
             value = parseFloat(value) || 0;
-            const selectedMetric = metricSelector.value;
             
-            // Dynamic thresholds based on metric
-            let thresholds = [0, 100000, 1000000, 5000000, 10000000, 20000000, 50000000, 100000000]; // Default for money
-            if (selectedMetric.includes('farmers')) {
-                thresholds = [0, 100, 500, 1000, 2500, 5000, 10000, 20000]; // For counts
-            } else if (selectedMetric.includes('area')) {
-                 thresholds = [0, 100, 500, 1000, 2500, 5000, 10000, 20000]; // For area
+            // Use different scales for money vs. counts vs. area
+            let grades;
+            if (metric.includes('losses') || metric.includes('cost') || metric.includes('gate')) {
+                // Money Scale
+                grades = [0, 100000, 1000000, 5000000, 10000000, 20000000, 50000000, 100000000];
+            } else if (metric.includes('area')) {
+                // Area (Hectares) Scale
+                grades = [0, 10, 100, 500, 1000, 2000, 5000, 10000];
+            } else {
+                // Counts (Farmers) Scale
+                grades = [0, 10, 50, 100, 200, 500, 1000, 2000];
             }
-
-            // Colors remain the same
+            
             const colors = ['#FFEDA0', '#FED976', '#FEB24C', '#FD8D3C', '#FC4E2A', '#E31A1C', '#BD0026', '#800026'];
             
-            for (let i = thresholds.length - 1; i >= 0; i--) {
-                if (value > thresholds[i]) {
-                    return colors[i];
+            // Find the correct color bin
+            // Loop backwards to find the highest bin the value fits into
+            for (let i = grades.length - 1; i >= 0; i--) {
+                if (value >= grades[i]) {
+                    return colors[i] || '#FFEDA0'; 
                 }
             }
             return '#FFEDA0'; // Default for 0 or lowest
         }
 
+
+        // MODIFIED: Style function now uses the selected metric
         function styleMapFeature(feature) {
             const selectedMetric = metricSelector.value;
             return {
-                fillColor: getMapColor(feature.properties[selectedMetric]), // Use selected metric
+                fillColor: getMapColor(feature.properties[selectedMetric], selectedMetric),
                 weight: 1,
                 opacity: 1,
                 color: '#666',
@@ -388,44 +384,49 @@
             };
         }
 
+        // MODIFIED: Popup now shows the selected metric and all other data
         function onEachMapFeature(feature, layer) {
             if (feature.properties) {
+                // console.log("Creating popup for feature:", feature.properties); // DEBUG
                 const props = feature.properties;
                 const selectedMetric = metricSelector.value;
                 const selectedMetricText = metricSelector.options[metricSelector.selectedIndex].text;
                 
                 // Dynamic formatter for the popup
                 let metricValue;
-                if (selectedMetric.includes('losses')) {
+                if (selectedMetric.includes('losses') || selectedMetric.includes('cost') || selectedMetric.includes('gate')) {
                     metricValue = formatCurrency(props[selectedMetric]);
-                } else if (selectedMetric.includes('farmers')) {
-                    metricValue = formatInt(props[selectedMetric]);
                 } else if (selectedMetric.includes('area')) {
                     metricValue = formatRegistryNumber(props[selectedMetric]) + ' ha';
                 } else {
                     metricValue = formatInt(props[selectedMetric]);
                 }
 
+                // Format commodities list
                 let commoditiesHtml = '<span class="na-value">N/A</span>';
                 if (props.commodities_affected && props.commodities_affected.length > 0) {
                     commoditiesHtml = props.commodities_affected.join(', ');
                 }
 
                 const content = `
-                    <div class="font-sans">
+                    <div class="font-sans max-w-xs">
                         <div class="font-bold text-base mb-1">${props.municipality_name || 'N/A'}</div>
                         <div class="text-sm">
                             <strong>Province:</strong> ${props.province_name || 'N/A'}<br>
-                            <strong>${selectedMetricText}:</strong> ${metricValue}<br>
+                            <!-- Main Metric -->
+                            <strong class="text-blue-600">${selectedMetricText}:</strong>
+                            <strong class="text-blue-600">${metricValue}</strong><br>
                             <hr class="my-1">
+                            <!-- Other Metrics -->
                             <strong>Commodities Affected:</strong> ${commoditiesHtml}<br> 
-                            <strong>Total Losses:</strong> ${formatCurrency(props.total_losses_php)}<br>
-                            <strong>Farmers Affected:</strong> ${formatInt(props.total_farmers_affected)}<br>
+                            <strong>Total Losses:</strong> ${formatCurrency(props.losses_php_grand_total)}<br>
+                            <strong>Farmers Affected:</strong> ${formatInt(props.farmers_affected)}<br>
                             <strong>Area Affected:</strong> ${formatRegistryNumber(props.area_total_affected_ha)} ha
                         </div>
                     </div>
                 `;
-                layer.bindPopup(content);
+                layer.bindPopup(content, { maxWidth: 300 }); // Set max width for popup
+                
                 layer.on({
                     mouseover: (e) => e.target.setStyle({ weight: 3, color: '#333' }),
                     mouseout: (e) => geojsonLayer.resetStyle(e.target)
@@ -433,27 +434,68 @@
             }
         }
 
-        // --- Function to Initialize Map (without data) ---
+        // MODIFIED: Function to update the map legend based on the selected metric
+        function updateMapLegend(metric) {
+            if (mapLegend) {
+                mapLegend.remove();
+            }
+            
+            mapLegend = L.control({position: 'bottomright'});
+            mapLegend.onAdd = function (map) {
+                const div = L.DomUtil.create('div', 'info legend');
+                let grades;
+                let title;
+
+                if (metric.includes('losses') || metric.includes('cost') || metric.includes('gate')) {
+                    title = 'Losses (PHP)';
+                    grades = [0, 100000, 1000000, 5000000, 10000000, 20000000, 50000000, 100000000];
+                } else if (metric.includes('area')) {
+                    title = 'Area (ha)';
+                    grades = [0, 10, 100, 500, 1000, 2000, 5000, 10000];
+                } else {
+                    title = 'Farmers Affected';
+                    grades = [0, 10, 50, 100, 200, 500, 1000, 2000];
+                }
+
+                div.innerHTML = `<strong>${title}</strong><br>`;
+                for (let i = 0; i < grades.length; i++) {
+                    const from = grades[i];
+                    const to = grades[i + 1];
+                    const color = getMapColor(from + 1, metric); // Get color for this bin
+                    
+                    div.innerHTML +=
+                        `<i style="background:${color}"></i> ` +
+                        formatNumber(from) + (to ? `&ndash;${formatNumber(to)}<br>` : '+');
+                }
+                return div;
+            };
+            mapLegend.addTo(mapInstance);
+        }
+
+        // MODIFIED: Initialize map with scroll zoom disabled
         function initializeMap() {
             try {
                 mapInstance = L.map('map', {
-                    scrollWheelZoom: false
-                }).setView([11.1, 122.5], 8);
-                
+                    scrollWheelZoom: false // Disable scroll zoom by default
+                }).setView([11.1, 122.5], 8); 
+
                 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                 }).addTo(mapInstance);
 
-                mapInstance.on('click', () => mapInstance.scrollWheelZoom.enable());
-                mapInstance.on('mouseout', () => mapInstance.scrollWheelZoom.disable());
+                // Enable scroll zoom only after user clicks on the map
+                mapInstance.on('click', () => {
+                    if (!mapInstance.scrollWheelZoom.enabled()) {
+                        mapInstance.scrollWheelZoom.enable();
+                    }
+                });
+                // Disable scroll zoom when mouse leaves the map
+                mapInstance.on('mouseout', () => {
+                    mapInstance.scrollWheelZoom.disable();
+                });
 
-                mapLegend = L.control({position: 'bottomright'});
-                mapLegend.onAdd = function (map) {
-                    const div = L.DomUtil.create('div', 'info legend');
-                    updateMapLegend(div); // Call helper to populate legend
-                    return div;
-                };
-                mapLegend.addTo(mapInstance);
+                // Set initial legend
+                updateMapLegend(metricSelector.value);
 
             } catch (error) {
                  console.error('Error initializing map:', error);
@@ -461,69 +503,29 @@
             }
         }
 
-        // --- <<< ADDED: Helper to update map legend text and colors >>> ---
-        function updateMapLegend(div) {
-            const selectedMetric = metricSelector.value;
-            const selectedMetricText = metricSelector.options[metricSelector.selectedIndex].text;
-            
-            let thresholds = [0, 100000, 1000000, 5000000, 10000000, 20000000, 50000000, 100000000]; // Default for money
-            let formatFunc = formatNumber; // Default for money/PHP
-
-            if (selectedMetric.includes('farmers')) {
-                thresholds = [0, 100, 500, 1000, 2500, 5000, 10000, 20000];
-                formatFunc = formatInt;
-            } else if (selectedMetric.includes('area')) {
-                 thresholds = [0, 100, 500, 1000, 2500, 5000, 10000, 20000];
-                 formatFunc = (val) => formatInt(val) + ' ha'; // Add 'ha' suffix
-            }
-
-            if (div) { // Only update if div exists
-                div.innerHTML = `<strong>${selectedMetricText}</strong><br>`;
-                for (let i = 0; i < thresholds.length; i++) {
-                    const from = thresholds[i];
-                    const to = thresholds[i + 1];
-                    const color = getMapColor(from + 1); // Get color for this grade
-                    
-                    div.innerHTML +=
-                        '<i style="background:' + color + '"></i> ' +
-                        formatFunc(from) + (to ? '&ndash;' + formatFunc(to) + '<br>' : '+');
-                }
-            }
-        }
-
-        // --- Function to toggle map size ---
+        // MODIFIED: Map resize toggle function
         function toggleMapSize() {
-            const isSmall = mapContainer.classList.contains('map-container-small');
-            if (isSmall) {
-                mapContainer.classList.remove('map-container-small');
-                mapContainer.classList.add('map-container-large');
+            mapIsExpanded = !mapIsExpanded;
+            if (mapIsExpanded) {
+                mapWrapper.style.height = '75vh'; // 75% of viewport height
                 mapExpandIcon.classList.add('hidden');
                 mapMinimizeIcon.classList.remove('hidden');
             } else {
-                mapContainer.classList.remove('map-container-large');
-                mapContainer.classList.add('map-container-small');
+                mapWrapper.style.height = '350px'; // Back to default
                 mapExpandIcon.classList.remove('hidden');
                 mapMinimizeIcon.classList.add('hidden');
             }
+            // IMPORTANT: Tell Leaflet to re-check its size after the animation
             setTimeout(() => {
-                if (mapInstance) {
-                    mapInstance.invalidateSize();
-                }
-            }, 300);
+                mapInstance.invalidateSize();
+            }, 300); // 300ms matches the CSS transition
         }
-        toggleMapBtn.addEventListener('click', toggleMapSize);
+        toggleMapSizeBtn.addEventListener('click', toggleMapSize);
 
 
         // --- Function to Update Map with Filtered Data ---
         async function updateMap(params) {
             console.log("Updating map data...");
-            // <<< ADDED: Update map legend and title based on metric selector >>>
-            const selectedMetricText = metricSelector.options[metricSelector.selectedIndex].text;
-            mapTitleMetric.textContent = selectedMetricText;
-            if (mapLegend && mapLegend.getContainer()) {
-                updateMapLegend(mapLegend.getContainer());
-            }
-
             try {
                 const filteredMapUrl = `${mapApiUrl}?${params.toString()}`;
                 console.log("Fetching map data from:", filteredMapUrl);
@@ -537,15 +539,19 @@
                     mapInstance.removeLayer(geojsonLayer);
                 }
                 
+                geojsonLayer = L.geoJSON(geojsonData, {
+                    style: styleMapFeature,
+                    onEachFeature: onEachMapFeature
+                }).addTo(mapInstance);
+
+                // Update the legend to match the new data's metric
+                updateMapLegend(metricSelector.value);
+
+                // Fly to new bounds if data is returned, else reset
                 if (geojsonData.features.length > 0) {
-                    geojsonLayer = L.geoJSON(geojsonData, {
-                        style: styleMapFeature, // Style is now dynamic based on metric
-                        onEachFeature: onEachMapFeature // Popup is now dynamic based on metric
-                    }).addTo(mapInstance);
-                    
-                    mapInstance.fitBounds(geojsonLayer.getBounds());
+                    mapInstance.flyToBounds(geojsonLayer.getBounds(), { padding: [20, 20] });
                 } else {
-                    mapInstance.setView([11.1, 122.5], 8);
+                    mapInstance.flyTo([11.1, 122.5], 8); // Reset view
                 }
 
             } catch (error) {
@@ -560,7 +566,7 @@
         async function populateFilters() {
             console.log("Populating filters...");
             try {
-                const response = await fetch(`${chartApiUrl}?limit=5000`);
+                const response = await fetch(`${chartApiUrl}?limit=10000`); // Fetch a larger sample
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
                 const result = await response.json();
                 if (result.status === 'success' && result.data) {
@@ -568,15 +574,16 @@
                     
                     const provincesSet = new Set();
                     const categoriesSet = new Set();
-                    const yearsSet = new Set();
                     const commoditiesSet = new Set(); // <<< ADDED
-                    provinceMunicipalityMap = {};
+                    const yearsSet = new Set();
+                    provinceMunicipalityMap = {}; 
 
                     allData.forEach(item => {
                         const province = item.province;
                         const municipality = item.municipality;
                         const category = item.disaster_category;
                         const commodity = item.commodity; // <<< ADDED
+                        const year = item.year;
 
                         if (province && province !== 'Unknown') {
                             provincesSet.add(province);
@@ -591,31 +598,34 @@
                         if (category && category !== 'Unknown') {
                             categoriesSet.add(category);
                         }
-                        if (commodity && commodity !== 'Unknown') { // <<< ADDED
+                        // <<< ADDED: Populate commodities >>>
+                        if (commodity && commodity !== 'Unknown') {
                             commoditiesSet.add(commodity);
                         }
-                        if (item.year && item.year > 1900) {
-                            yearsSet.add(item.year);
+                        if (year) {
+                            yearsSet.add(year);
                         }
                     });
 
+                    // Sort sets
                     const provinces = [...provincesSet].sort();
                     const categories = [...categoriesSet].sort();
-                    const years = [...yearsSet].sort((a, b) => b - a);
                     const commodities = [...commoditiesSet].sort(); // <<< ADDED
+                    const years = [...yearsSet].sort((a, b) => b - a); 
                     for (const prov in provinceMunicipalityMap) {
                         provinceMunicipalityMap[prov] = [...provinceMunicipalityMap[prov]].sort();
                     }
 
+                    // Clear existing options
                     while (provinceFilter.options.length > 1) provinceFilter.remove(1);
                     while (categoryFilter.options.length > 1) categoryFilter.remove(1);
-                    while (yearFilter.options.length > 1) yearFilter.remove(1);
                     while (commodityFilter.options.length > 1) commodityFilter.remove(1); // <<< ADDED
+                    while (yearFilter.options.length > 1) yearFilter.remove(1);
 
                     provinces.forEach(p => provinceFilter.add(new Option(p, p)));
                     categories.forEach(c => categoryFilter.add(new Option(c, c)));
-                    years.forEach(y => yearFilter.add(new Option(y, y)));
                     commodities.forEach(c => commodityFilter.add(new Option(c, c))); // <<< ADDED
+                    years.forEach(y => yearFilter.add(new Option(y, y)));
                     console.log("Filters populated.");
                 } else {
                      console.error("Could not fetch data to populate filters:", result.message || "Unknown error");
@@ -635,7 +645,7 @@
             if (selectedProvince && provinceMunicipalityMap[selectedProvince]) {
                 municipalityFilter.disabled = false;
                 municipalityFilter.classList.remove('bg-gray-200');
-                municipalityFilter.options[0].text = "All Municipalities";
+                municipalityFilter.options[0].text = "All Municipalities"; 
                 
                 provinceMunicipalityMap[selectedProvince].forEach(mun => {
                     municipalityFilter.add(new Option(mun, mun));
@@ -690,13 +700,15 @@
             noDataDiv.classList.add('hidden');
             dataTable.classList.add('hidden');
             dataTableBody.innerHTML = '';
-            tableNote.classList.add('hidden');
-            tableSearchInput.value = '';
+            tableNote.classList.add('hidden'); 
+            tableSearchInput.value = ''; 
 
+            // Destroy existing charts
             if (barChartInstance) barChartInstance.destroy();
             if (timeSeriesChartInstance) timeSeriesChartInstance.destroy();
             if (categoryPieChartInstance) categoryPieChartInstance.destroy();
 
+            // Build API URL with Filters
             const params = new URLSearchParams();
             const province = provinceFilter.value;
             const category = categoryFilter.value;
@@ -721,7 +733,7 @@
             updateMap(mapParams); 
 
             const chartParams = new URLSearchParams(params);
-            chartParams.append('limit', 5000);
+            chartParams.append('limit', 10000); // High limit for charts/table
             fetchChartData(chartParams);
         }
 
@@ -729,13 +741,6 @@
         async function fetchChartData(params) {
             const filteredChartUrl = `${chartApiUrl}?${params.toString()}`;
             console.log("Fetching chart data from:", filteredChartUrl);
-
-            // <<< ADDED: Get selected metric for chart processing >>>
-            const selectedMetric = metricSelector.value;
-            const selectedMetricText = metricSelector.options[metricSelector.selectedIndex].text;
-            // Update small chart titles
-            timeSeriesTitleMetric.textContent = selectedMetricText.split(' (')[0]; // "Total Losses" -> "Total Losses"
-            pieTitleMetric.textContent = selectedMetricText.split(' (')[0];
 
             try {
                 const response = await fetch(filteredChartUrl);
@@ -748,91 +753,100 @@
 
                 if (result.status === 'success' && result.data && result.data.length > 0) {
                     const data = result.data;
-                    console.log(`Filtered chart data fetched: ${data.length} items`, data.slice(0, 5));
+                    console.log(`Filtered chart data fetched: ${data.length} items`, data.slice(0, 5)); 
+
+                    const selectedMetric = metricSelector.value;
+                    const selectedMetricText = metricSelector.options[metricSelector.selectedIndex].text;
 
                     // --- 1. Prepare Data for Bar Chart ---
                     let barGroupByKey = 'province';
                     let barChartTitle = `Total ${selectedMetricText} by Province`;
-                    const province = params.get('province');
+                    const province = params.get('province'); 
                     const municipality = params.get('municipality');
                     const category = params.get('disaster_category');
 
-                    if (province && !municipality) { barGroupByKey = 'municipality'; barChartTitle = `Total ${selectedMetricText} by Municipality in ${province}`; }
-                    else if (province && municipality) { barGroupByKey = 'disaster_category'; barChartTitle = `Total ${selectedMetricText} by Category in ${municipality}`; }
-                    else if (!province && category) { barGroupByKey = 'province'; barChartTitle = `Total ${selectedMetricText} from ${category} by Province`; }
-                    else if (province && category) { barGroupByKey = 'municipality'; barChartTitle = `Total ${selectedMetricText} from ${category} in ${province}`; }
+                    if (province && !municipality) { barGroupByKey = 'municipality'; barChartTitle = `${selectedMetricText} by Municipality in ${province}`; }
+                    else if (province && municipality) { barGroupByKey = 'disaster_category'; barChartTitle = `${selectedMetricText} by Category in ${municipality}`; }
+                    else if (!province && category) { barGroupByKey = 'province'; barChartTitle = `${selectedMetricText} from ${category} by Province`; }
+                    else if (province && category) { barGroupByKey = 'municipality'; barChartTitle = `${selectedMetricText} from ${category} in ${province}`; }
 
 
-                    const lossesByBarGroup = data.reduce((acc, item) => {
+                    const dataByBarGroup = data.reduce((acc, item) => {
                         const key = item[barGroupByKey] || 'Unknown';
-                        // <<< MODIFIED: Use selectedMetric for value >>>
-                        const metricValue = parseFloat(item[selectedMetric]);
-                        acc[key] = (acc[key] || 0) + (isNaN(metricValue) ? 0 : metricValue);
+                        // MODIFIED: Robustly parse the selected metric, default to 0
+                        const value = parseFloat(item[selectedMetric] || 0); // Add || 0 fallback
+                        acc[key] = (acc[key] || 0) + (isNaN(value) ? 0 : value);
                         return acc;
                     }, {});
 
-                    const sortedBarGroups = Object.entries(lossesByBarGroup).sort(([,a],[,b]) => b-a);
+                    const sortedBarGroups = Object.entries(dataByBarGroup).sort(([,a],[,b]) => b-a);
                     const barLabels = sortedBarGroups.map(([key]) => key);
                     const barValues = sortedBarGroups.map(([,value]) => value);
 
+                    // <<< --- ADD DEBUGGING LOG --- >>>
+                    // console.log("Bar Chart Data:", { labels: barLabels, values: barValues });
+                    // <<< --- END DEBUGGING LOG --- >>>
 
                     // --- 2. Prepare Data for Line Chart (Monthly) ---
-                    const lossesByMonth = data.reduce((acc, item) => {
+                    const dataByMonth = data.reduce((acc, item) => {
                         if (item.event_date_start && item.event_date_start !== null && item.event_date_start !== 'N/A') {
                             const monthYear = dayjs(item.event_date_start).isValid() ? dayjs(item.event_date_start).format('YYYY-MM') : null;
                              if (monthYear) {
-                                // <<< MODIFIED: Use selectedMetric for value >>>
-                                const metricValue = parseFloat(item[selectedMetric]);
-                                acc[monthYear] = (acc[monthYear] || 0) + (isNaN(metricValue) ? 0 : metricValue);
+                                // MODIFIED: Use the selected metric, default to 0
+                                const value = parseFloat(item[selectedMetric] || 0); // Add || 0 fallback
+                                acc[monthYear] = (acc[monthYear] || 0) + (isNaN(value) ? 0 : value);
                             }
                         }
                         return acc;
                     }, {});
-                    const sortedMonths = Object.keys(lossesByMonth).sort();
-                    const monthlyLossValues = sortedMonths.map(month => lossesByMonth[month]);
+                    const sortedMonths = Object.keys(dataByMonth).sort();
+                    const monthlyValues = sortedMonths.map(month => dataByMonth[month]);
+
+                    // <<< --- ADD DEBUGGING LOG --- >>>
+                    // console.log("Line Chart Data:", { labels: sortedMonths, values: monthlyValues });
+                    // <<< --- END DEBUGGING LOG --- >>>
 
                     // --- 3. Prepare Data for Pie Chart (Category Distribution) ---
-                    const lossesByCategory = data.reduce((acc, item) => {
+                    const dataByCategory = data.reduce((acc, item) => {
                         const key = item.disaster_category || 'Unknown';
-                        // <<< MODIFIED: Use selectedMetric for value >>>
-                        const metricValue = parseFloat(item[selectedMetric]);
-                        acc[key] = (acc[key] || 0) + (isNaN(metricValue) ? 0 : metricValue);
+                        // MODIFIED: Use the selected metric, default to 0
+                        const value = parseFloat(item[selectedMetric] || 0); // Add || 0 fallback
+                        acc[key] = (acc[key] || 0) + (isNaN(value) ? 0 : value);
                         return acc;
                     }, {});
                     
-                    const sortedCategories = Object.entries(lossesByCategory).sort(([,a],[,b]) => b-a);
-                    const topN = 8;
+                    const sortedCategories = Object.entries(dataByCategory).sort(([,a],[,b]) => b-a);
+                    const topN = 8; 
                     let categoryLabels = [];
-                    let categoryLossValues = [];
-                    let otherLosses = 0;
+                    let categoryValues = [];
+                    let otherValues = 0;
 
                     sortedCategories.forEach(([key, value], index) => {
                         if (value > 0) {
                             if (index < topN) {
                                 categoryLabels.push(key);
-                                categoryLossValues.push(value);
+                                categoryValues.push(value);
                             } else {
-                                otherLosses += value;
+                                otherValues += value;
                             }
                         }
                     });
 
-                    if (otherLosses > 0) {
+                    if (otherValues > 0) {
                         categoryLabels.push('OTHERS');
-                        categoryLossValues.push(otherLosses);
+                        categoryValues.push(otherValues);
                     }
+                    
+                    // <<< --- ADD DEBUGGING LOG --- >>>
+                    // console.log("Pie Chart Data:", { labels: categoryLabels, values: categoryValues });
+                    // <<< --- END DEBUGGING LOG --- >>>
 
                     // --- Create Bar Chart ---
-                    // Dynamic formatter for tooltips/axes
-                    const isCurrency = selectedMetric.includes('losses');
-                    const metricFormatFunc = isCurrency ? formatCurrency : formatInt;
-                    const metricAxisLabel = isCurrency ? "Value (PHP)" : "Count";
-
                     const barCtx = barChartCanvas.getContext('2d');
                     barChartInstance = new Chart(barCtx, {
                         type: 'bar',
                         data: {
-                            labels: barLabels,
+                            labels: barLabels, 
                             datasets: [{
                                 label: selectedMetricText,
                                 data: barValues,
@@ -842,7 +856,7 @@
                              }]
                         },
                         options: {
-                            responsive: true, maintainAspectRatio: false, indexAxis: 'y',
+                            responsive: true, maintainAspectRatio: false, indexAxis: 'y', 
                              scales: {
                                  y: { 
                                      beginAtZero: true,
@@ -850,13 +864,13 @@
                                  },
                                  x: { 
                                       title: { display: true, text: selectedMetricText },
-                                      ticks: { callback: formatNumber } // Use generic formatNumber for axis
+                                      ticks: { callback: formatNumber }
                                  }
                             },
                             plugins: {
                                 legend: { display: false },
                                 title: { display: true, text: barChartTitle, font: { size: 16 } },
-                                tooltip: { callbacks: { label: ctx => `${selectedMetricText}: ${metricFormatFunc(ctx.parsed.x)}` } }
+                                tooltip: { callbacks: { label: ctx => `${selectedMetricText}: ${formatNumber(ctx.parsed.x)}` } } 
                             }
                         }
                     });
@@ -866,20 +880,8 @@
                         const lineCtx = timeSeriesCanvas.getContext('2d');
                         timeSeriesChartInstance = new Chart(lineCtx, {
                              type: 'line',
-                             data: { labels: sortedMonths, datasets: [{ label: `Monthly ${selectedMetricText}`, data: monthlyLossValues, borderColor: 'rgb(75, 192, 192)', backgroundColor: 'rgba(75, 192, 192, 0.2)', tension: 0.1, fill: true }] },
-                             options: { 
-                                 responsive: true, 
-                                 maintainAspectRatio: false, 
-                                 scales: { 
-                                     y: { beginAtZero: true, title: { display: true, text: selectedMetricText }, ticks: { callback: formatNumber } }, 
-                                     x: { title: { display: true, text: 'Month' } } 
-                                 }, 
-                                 plugins: { 
-                                     legend: { display: false }, 
-                                     title: { display: false }, 
-                                     tooltip: { callbacks: { label: ctx => `Total: ${metricFormatFunc(ctx.parsed.y)}` } } 
-                                 } 
-                             }
+                             data: { labels: sortedMonths, datasets: [{ label: `Monthly ${selectedMetricText}`, data: monthlyValues, borderColor: 'rgb(75, 192, 192)', backgroundColor: 'rgba(75, 192, 192, 0.2)', tension: 0.1, fill: true }] },
+                             options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, title: { display: true, text: selectedMetricText }, ticks: { callback: formatNumber } }, x: { title: { display: true, text: 'Month' } } }, plugins: { legend: { display: false }, title: { display: false }, tooltip: { callbacks: { label: ctx => `Total ${selectedMetricText}: ${formatNumber(ctx.parsed.y)}` } } } }
                         });
                     } else {
                          const lineCtx = timeSeriesCanvas.getContext('2d');
@@ -897,19 +899,18 @@
                         const pieColors = ['rgba(255, 99, 132, 0.7)', 'rgba(54, 162, 235, 0.7)', 'rgba(255, 206, 86, 0.7)', 'rgba(75, 192, 192, 0.7)', 'rgba(153, 102, 255, 0.7)', 'rgba(255, 159, 64, 0.7)', 'rgba(199, 199, 199, 0.7)', 'rgba(83, 102, 255, 0.7)', 'rgba(100, 255, 100, 0.7)'];
                         categoryPieChartInstance = new Chart(pieCtx, {
                              type: 'pie',
-                             data: { labels: categoryLabels, datasets: [{ label: selectedMetricText, data: categoryLossValues, backgroundColor: pieColors.slice(0, categoryLabels.length), hoverOffset: 4 }] },
-                             options: { 
-                                 responsive: true, 
-                                 maintainAspectRatio: false, 
-                                 plugins: { 
-                                     legend: { 
-                                         position: 'right',
-                                         labels: { padding: 10, boxWidth: 12 }
-                                     }, 
-                                     title: { display: false }, 
-                                     tooltip: { callbacks: { label: ctx => `${ctx.label}: ${metricFormatFunc(ctx.parsed)}` } } 
-                                 } 
-                             }
+                             data: { labels: categoryLabels, datasets: [{ label: selectedMetricText, data: categoryValues, backgroundColor: pieColors.slice(0, categoryLabels.length), hoverOffset: 4 }] },
+                             options: { responsive: true, maintainAspectRatio: false, plugins: { 
+                                 legend: { 
+                                     position: 'right', 
+                                     labels: {
+                                         padding: 10,
+                                         boxWidth: 12
+                                     }
+                                 }, 
+                                 title: { display: false }, 
+                                 tooltip: { callbacks: { label: ctx => `${ctx.label}: ${formatNumber(ctx.parsed)}` } } 
+                             } }
                         });
                     } else {
                          const pieCtx = categoryPieCanvas.getContext('2d');
@@ -926,25 +927,25 @@
                     let farmerDataAvailable = false;
                     data.slice(0, tableLimit).forEach(item => {
                         const row = document.createElement('tr');
-                        row.className = 'hover:bg-gray-50 text-sm';
+                        row.className = 'hover:bg-gray-50 text-sm'; 
 
                         const hasFarmerData = item.registered_rice_farmers !== null && item.registered_rice_farmers !== undefined && item.registered_rice_farmers > 0;
                         if (hasFarmerData) farmerDataAvailable = true;
 
-                        // <<< MODIFIED: Expanded table data >>>
+                        // <<< MODIFIED: All new columns added to table row >>>
                         row.innerHTML = `
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700">${formatText(item.event_date_start)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700">${formatText(item.province)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700">${formatText(item.municipality)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700">${formatText(item.commodity)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700">${formatText(item.disaster_category)}</td>
+                            <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatCurrency(item.losses_php_grand_total)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatInt(item.farmers_affected)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatRegistryNumber(item.area_total_affected_ha)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatRegistryNumber(item.area_partially_damaged_ha)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatRegistryNumber(item.area_totally_damaged_ha)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatCurrency(item.losses_php_production_cost)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatCurrency(item.losses_php_farm_gate)}</td>
-                            <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatCurrency(item.losses_php_grand_total)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatRegistryNumber(item.registered_rice_farmers)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatRegistryNumber(item.total_declared_rice_area_ha)}</td>
                             <td class="px-4 py-2 whitespace-nowrap text-gray-700 text-right">${formatPercentage(item.percentage_farmers_affected)}</td>
@@ -955,7 +956,6 @@
                      if (farmerDataAvailable) {
                          tableNote.classList.remove('hidden');
                      }
-
 
                     loadingDiv.style.display = 'none';
 
@@ -999,9 +999,9 @@
 
         // --- Initial Load ---
         async function initializeDashboard() {
-            initializeMap();
+            initializeMap(); // Initialize the empty map
             await populateFilters();
-            await fetchDataAndDisplay();
+            await fetchDataAndDisplay(); // Fetch data for both map and charts
         }
 
         initializeDashboard();
